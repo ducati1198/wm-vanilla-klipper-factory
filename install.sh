@@ -17,7 +17,7 @@
 # NOT TESTED ON THE PRINTER YET (branch: testing).
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$HERE/lib/common.sh"
+. "$HERE/lib/common.sh"; . "$HERE/lib/snapshot.sh"
 
 DEFAULT_REF="v2.25.2"
 SRC_URL="${WM_SRC_URL:-https://github.com/ducati1198/WM_Ultra_Vanilla_Klipper}"
@@ -79,23 +79,17 @@ CMD+=("${EXTRA[@]}")
 say "      source: $SRC_URL @ $REF -> $SRC_DIR"
 say "      command: ${CMD[*]}"
 
-# ---- 5. backup the factory state ----------------------------------------------
-BK="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
-if [ "$MODE" = dry ]; then say "      would back up the factory state to $BK"
+# ---- 5. snapshot of the factory stack (once, never overwritten) -----------------------
+if [ "$MODE" = dry ]; then
+    say "      would save the factory snapshot to $SNAP_DIR$(snapshot_exists && echo ' (already exists, kept)')"
 else
     if [ "$YES" != 1 ]; then
-        printf 'Install vanilla Klipper on this board now? Klipper, Moonraker and Fluidd will be set up. [yes/NO] '
+        printf 'Install vanilla Klipper on this board now? A factory snapshot is saved first. [yes/NO] '
         read -r a; [ "$a" = yes ] || fail "cancelled. Nothing changed."
     fi
-    mkdir -p "$BK" || fail "cannot create $BK"
-    : >"$BK/services.state"
-    for s in $STACK_SERVICES; do echo "$s $(service_enabled $s) $(service_active $s)" >>"$BK/services.state"; done
-    for f in printer_data/config printer_data/KlipperScreen.conf; do
-        [ -e "$HOME_DIR/$f" ] && cp -a "$HOME_DIR/$f" "$BK/" 2>/dev/null
-    done
-    [ -e /etc/network/interfaces.d/can0 ] && cp -a /etc/network/interfaces.d/can0 "$BK/can0.interfaces"
-    echo "$(date -Is) $M" >"$BK/MANIFEST"
-    ok "factory state saved: $BK"
+    snapshot_create
+    snapshot_verify || fail "the snapshot does not pass its checksum. Not installing."
+    say "      tip: copy it to a USB stick now with ./snapshot.sh usb"
 fi
 
 # ---- 6. get the installer and run it --------------------------------------------
@@ -107,11 +101,11 @@ else
     else
         ( cd "$SRC_DIR" && $GIT fetch -q --depth 1 origin tag "$REF" && $GIT checkout -q "$REF" ) || fail "could not switch $SRC_DIR to $REF."
     fi
-    ( cd "$SRC_DIR" && "${CMD[@]}" ) || fail "the vanilla installer stopped with an error (see above). Restore: ./restore.sh"
+    ( cd "$SRC_DIR" && "${CMD[@]}" ) || fail "the vanilla installer stopped with an error (see above). Back to factory: ./restore.sh --factory"
 fi
 
 # ---- 7. report -----------------------------------------------------------------
 say "      memory now: $(avail_mb) MB available of $(ram_mb) MB"
-[ "$MODE" = dry ] && say "dry run done: nothing changed." || ok "done. Restore the factory state any time with ./restore.sh"
+[ "$MODE" = dry ] && say "dry run done: nothing changed." || ok "done. Back to factory any time: ./restore.sh --factory"
 [ "$WARNINGS" = 0 ] || say "$WARNINGS warning(s): read them above."
 exit 0

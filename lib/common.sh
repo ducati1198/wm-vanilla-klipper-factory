@@ -37,3 +37,13 @@ print_active() {
 
 service_enabled() { $SYSTEMCTL is-enabled "$1" 2>/dev/null || true; }
 service_active()  { $SYSTEMCTL is-active  "$1" 2>/dev/null || true; }
+
+# ---- factory snapshot settings ------------------------------------------------
+SNAP_DIR="${WM_SNAP_DIR:-$HOME_DIR/wm-factory-snapshot}"
+SYS_ROOT="${WM_SYS_ROOT:-/}"
+if [ -n "${WM_SUDO+x}" ]; then SUDO="$WM_SUDO"; elif [ "$(id -u)" = 0 ]; then SUDO=""; else SUDO=sudo; fi
+# folders in the home directory that make the factory stack (printer_data without gcodes, logs, timelapse)
+SNAP_HOME_ITEMS="klipper klippy-env moonraker moonraker-env fluidd fluidd-config crowsnest moonraker-timelapse printer_data TM_T1 KlipperScreen mcu_update"
+SNAP_HOME_EXCLUDES="--exclude=printer_data/gcodes --exclude=printer_data/logs --exclude=printer_data/timelapse --exclude=*/__pycache__"
+# system files outside home (relative to /): only the ones that exist are saved
+SNAP_SYS_ITEMS="etc/systemd/system/klipper.service etc/systemd/system/moonraker.service etc/systemd/system/crowsnest.service etc/systemd/system/klipper-mcu.service etc/systemd/system/KlipperScreen.service etc/systemd/system/wm-chamber-light-http.service etc/systemd/system/wm-chamber-light.service etc/systemd/system/wm-screen-rescue.service etc/systemd/system/wm-screen-usb.service etc/nginx etc/network/interfaces.d/can0 etc/default/klipper-mcu etc/sudoers.d"

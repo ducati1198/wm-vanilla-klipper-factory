@@ -32,3 +32,9 @@ Next: fix those 2 tests, copy the missing docs, drop checks for things this proj
 1. **factory/** (231 MB per model). The installer checks it against git (`git status -- factory`, `git checkout -- factory`), so it must be committed in the repo it runs from. Options: (a) commit only `factory/ultra-s` (231 MB), (b) keep the installer pulling a pinned clone of WM_Ultra_Vanilla_Klipper and use its `factory/`, (c) git submodule.
 2. Wire `vendor/acepro-panel` and `vendor/load-cell-mcu` into the installer instead of its `git clone` of the two GitHub repos.
 3. `install.sh` (the lean wrapper) still clones the vanilla repo; switch it to this folder's `installer.sh` once 1 and 2 are decided.
+
+## Factory snapshot and restore (added on top of the port)
+- `snapshot.sh`, `lib/snapshot.sh`, `restore.sh --factory`, tests in `tests/test_snapshot.sh` (21 checks, fake home and system root).
+- Factory reset: the factory app keeps clean copies in `TM_T1/factory_settings/` and a script `TM_T1/scripts/restore_factory_settings.sh` that copies the config files back. That script does NOT copy `printer.cfg`, `saved_variables.cfg` or `tmt1.ini` (they hold the calibration), so `restore.sh` copies those three from `factory_settings/` too: the calibration values go back to the factory defaults (offsets 0.0).
+- NOT KNOWN YET: how the factory app decides the printer must be calibrated again. It is not in the saved values I compared. Test on a spare board: after restore, does the app force calibration? If not, find the flag.
+- NOT TESTED: USB stick detection on the real board (an earlier test in the vanilla repo did not see a stick).
