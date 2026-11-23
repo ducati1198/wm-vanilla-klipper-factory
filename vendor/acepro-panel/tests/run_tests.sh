@@ -1,0 +1,414 @@
+#!/bin/bash
+# Installer tests for the WonderMaker Ultra installer. They run installer.sh against FAKE
+# home folders in /tmp, answer its questions through stdin, and never touch a printer, service or real config.
+#
+#   bash tests/run_tests.sh
+#
+set -u
+if [ -z "${ACE_TESTS_IN_COPY:-}" ]; then   # always test a throwaway copy of the repository, never the real folder
+    CP="$(mktemp -d)"; cp -a "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/." "$CP/"
+    ACE_TESTS_IN_COPY=1 bash "$CP/tests/run_tests.sh" "$@"; rc=$?; rm -rf "$CP"; exit $rc
+fi
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INST="$REPO/installer.sh"
+PASS=0; FAIL=0
+ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
+
+ok()   { PASS=$((PASS+1)); echo "  ok    $1"; }
+bad()  { FAIL=$((FAIL+1)); echo "  FAIL  $1"; [ -n "${2:-}" ] && echo "$2" | sed 's/^/        /' | head -25; }
+check() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+
+new_home() { # name [nowm]
+    local h="$ROOT/$1" c
+    c="$h/printer_data/config"
+    mkdir -p "$h/klipper/klippy/extras" "$c" "$h/printer_data/logs" "$h/fluidd/assets"
+    echo '{"x":1}' > "$h/fluidd/config.json"; echo old > "$h/fluidd/assets/old.js"
+    printf '[include mainsail.cfg]\n[include zru-s.cfg]\n[include other.cfg]\n\n[save_variables]\nfilename: /tmp/v.cfg\n\n[respond]\n\n#*# <---------------------- SAVE_CONFIG ---------------------->\n#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.\n#*#\n#*# [heater_bed]\n#*# control = pid\n' > "$c/printer.cfg"
+    if [ "${2:-}" != nowm ]; then
+        printf '[gcode_macro _CHANGE_TOOL]\ngcode:\n\n[gcode_macro UNLOAD_FILAMENT]\ngcode:\n\n[filament_switch_sensor path_0]\nswitch_pin: !HUB:PC13\n' > "$c/zru-s.cfg"
+    fi
+    echo "$h"
+}
+inst() { # home answers [args...]
+    local h="$1" answers="$2"; shift 2
+    OUT="$(printf '%b' "$answers" | ACE_INSTALL_HOME="$h" ACE_INSTALLER_TEST=1 bash "$INST" "$@" 2>&1)"; RC=$?
+}
+cfg() { echo "$1/printer_data/config"; }
+
+# Answers in order: ACE Pro? auto-load? endless? Fluidd panel? continue?
+A_ALL='y\ny\ny\ny\ny\n'
+
+echo "1. Fresh install"
+H="$(new_home t1)"; C="$(cfg "$H")"
+inst "$H" "$A_ALL"
+check "installer finished"                          test "$RC" -eq 0
+for f in rpi_ace_driver.cfg rpi_ace.cfg rpi_endless.cfg rpi-ultra-install.conf; do check "$f written" test -f "$C/$f"; done
+check "includes sit after [save_variables], above SAVE_CONFIG" test "$(grep -n 'include rpi_\|save_variables\|SAVE_CONFIG' "$C/printer.cfg" | cut -d: -f2- | tr '\n' ' ')" = "[save_variables] [include rpi_ace_driver.cfg] [include rpi_ace.cfg] [include rpi_endless.cfg] [include rpi_stats.cfg] #*# <---------------------- SAVE_CONFIG ----------------------> "
+check "other.cfg include still follows zru-s"        test "$(sed -n 2,3p "$C/printer.cfg" | tr '\n' ' ')" = "[include zru-s.cfg] [include other.cfg] "
+check "SAVE_CONFIG block untouched"                 test "$(tail -1 "$C/printer.cfg")" = "#*# control = pid"
+check "register_tool_commands False kept"           grep -q '^register_tool_commands: False' "$C/rpi_ace_driver.cfg"
+check "ACE_Auto_Load switch in the driver config"   grep -q '^\[output_pin ACE_Auto_Load\]' "$C/rpi_ace_driver.cfg"
+check "driver linked to the repo"                   test "$(readlink "$H/klipper/klippy/extras/ace")" = "$REPO/extras/ace"
+check "virtual_pins linked"                         test -L "$H/klipper/klippy/extras/virtual_pins.py"
+check "temperature_ace linked"                      test -L "$H/klipper/klippy/extras/temperature_ace.py"
+check "Fluidd has the panel"                        grep -rlq "ACE feeder" "$H/fluidd/assets"
+check "Fluidd config.json kept"                     grep -q '"x":1' "$H/fluidd/config.json"
+check "Fluidd backup folder exists in ~/ultra-backup/fluidd-page" test -n "$(ls -d "$H"/ultra-backup/fluidd-page/*/fluidd_backup_* 2>/dev/null)"
+check "nothing was written to the old backup places" bash -c '! ls -d "$0"/acepro-backup "$0"/fluidd_backup_* >/dev/null 2>&1' "$H"
+HU="$(new_home tum)"; CU="$(cfg "$HU")"
+printf '[server]\nport: 7125\n\n[update_manager fluidd]\ntype: web\nchannel: stable\nrepo: fluidd-core/fluidd\npath: ~/fluidd\n\n[update_manager]\nenable_auto_refresh: True\n' > "$CU/moonraker.conf"
+inst "$HU" "$A_ALL"
+check "[update_manager fluidd] is removed from moonraker.conf" bash -c '! grep -q "update_manager fluidd" "$0" && grep -q "^\[update_manager\]" "$0" && grep -q "^\[server\]" "$0"' "$CU/moonraker.conf"
+check "moonraker.conf copy saved before the removal" bash -c 'grep -rl "update_manager fluidd" "$0"/ultra-backup/installer/acepro-panel 2>/dev/null | head -1 | grep -q .' "$HU"
+check "backup manifest exists"                      test -n "$(ls "$H"/ultra-backup/installer/acepro-panel/wm-*/manifest.txt 2>/dev/null)"
+for n in 1 2 3 4 5 6 7; do mkdir -p "$H/fluidd_backup_2020010$n" "$H/acepro-backup/wm-2020010${n}_000000"; touch -d "2020-01-0$n" "$H/fluidd_backup_2020010$n" "$H/acepro-backup/wm-2020010${n}_000000"; done
+inst "$H" "$A_ALL"
+check "old saved copies: only the newest 5 stay, the newest is kept" bash -c "[ \$(ls -d '$H'/ultra-backup/fluidd-page/*/fluidd_backup_* | wc -l) -le 5 ] && [ \$(ls -d '$H'/ultra-backup/installer/acepro-panel/wm-*/ | wc -l) -le 5 ] && [ -d '$H/ultra-backup/installer/acepro-panel/wm-20200107_000000' ] && [ ! -d '$H/ultra-backup/installer/acepro-panel/wm-20200101_000000' ]"
+check "the old places are empty after the move (nothing left in the home folder)" bash -c '! ls -d "$0"/acepro-backup "$0"/fluidd_backup_* >/dev/null 2>&1' "$H"
+check "the move is listed in ~/ultra-backup/INDEX.txt" grep -q 'moved ~/acepro-backup/wm-20200107_000000' "$H/ultra-backup/INDEX.txt"
+check "no WonderMaker file was edited"              grep -q '^\[gcode_macro _CHANGE_TOOL\]' "$C/zru-s.cfg"
+check "Klipper was not restarted"                   bash -c '! echo "$0" | grep -q "Klipper restarted\."' "$OUT"
+inst "$H" "" --check;  check "--check passes"       test "$RC" -eq 0
+
+echo "2. Update keeps tuned values"
+sed -i 's/^variable_hub_to_head_mm: *1200/variable_hub_to_head_mm: 1234/;s/^variable_fast_timeout_s: *90/variable_fast_timeout_s: 45/' "$C/rpi_ace.cfg"
+sed -i 's/^feed_speed: 60/feed_speed: 33/' "$C/rpi_ace_driver.cfg"
+inst "$H" 'n\ny\n' --update
+check "update finished"                             test "$RC" -eq 0
+check "hub_to_head_mm 1234 kept"                    grep -q '^variable_hub_to_head_mm: *1234' "$C/rpi_ace.cfg"
+check "fast_timeout_s 45 kept"                      grep -q '^variable_fast_timeout_s: *45' "$C/rpi_ace.cfg"
+check "feed_speed 33 kept"                          grep -q '^feed_speed: *33' "$C/rpi_ace_driver.cfg"
+check "includes not duplicated"                     test "$(grep -c 'include rpi_ace.cfg' "$C/printer.cfg")" -eq 1
+
+echo "3. Dry run changes nothing"
+H3="$(new_home t3)"; C3="$(cfg "$H3")"; cp -a "$C3/printer.cfg" "$ROOT/p3.cfg"
+inst "$H3" "$A_ALL" --dry-run
+check "dry run finished"                            test "$RC" -eq 0
+check "printer.cfg identical"                       cmp -s "$ROOT/p3.cfg" "$C3/printer.cfg"
+check "no ACE cfg written"                          test ! -e "$C3/rpi_ace.cfg"
+check "no link made"                                test ! -e "$H3/klipper/klippy/extras/ace"
+
+echo "4. Not a WonderMaker config"
+H4="$(new_home t4 nowm)"
+inst "$H4" "$A_ALL"
+check "refuses with exit 1"                         test "$RC" -eq 1
+check "says why"                                    bash -c 'echo "$0" | grep -q "does not look like a WonderMaker"' "$OUT"
+check "nothing written"                             test ! -e "$(cfg "$H4")/rpi_ace.cfg"
+
+echo "5. Print in progress"
+H5="$(new_home t5)"
+OUT="$(printf '%b' "$A_ALL" | ACE_PRINT_STATE=printing ACE_INSTALL_HOME="$H5" ACE_INSTALLER_TEST=1 bash "$INST" 2>&1)"; RC=$?
+check "refuses while printing"                      test "$RC" -eq 1
+check "nothing written"                             test ! -e "$(cfg "$H5")/rpi_ace.cfg"
+
+echo "6. Without endless spool and without Fluidd"
+H6="$(new_home t6)"; C6="$(cfg "$H6")"
+inst "$H6" 'y\ny\nn\nn\ny\n'
+check "installer finished"                          test "$RC" -eq 0
+check "rpi_endless.cfg not written"                  test ! -e "$C6/rpi_endless.cfg"
+check "no endless include"                          bash -c '! grep -q wm_endless "$0"' "$C6/printer.cfg"
+check "Fluidd untouched"                            bash -c '! grep -rq "ACE feeder" "$0"' "$H6/fluidd/assets"
+inst "$H6" "" --check;  check "--check passes"      test "$RC" -eq 0
+
+echo "7. Undo restores everything"
+H7="$(new_home t7)"; C7="$(cfg "$H7")"; cp -a "$C7/printer.cfg" "$ROOT/p7.cfg"
+inst "$H7" "$A_ALL"
+inst "$H7" 'y\n' --undo
+check "undo finished"                               test "$RC" -eq 0
+check "printer.cfg back to the original"            cmp -s "$ROOT/p7.cfg" "$C7/printer.cfg"
+check "ACE cfgs gone"                               test ! -e "$C7/rpi_ace.cfg"
+check "link gone"                                   test ! -e "$H7/klipper/klippy/extras/ace"
+check "Fluidd back to the old build"                test -f "$H7/fluidd/assets/old.js"
+
+echo "8. Uninstall, then undo"
+H8="$(new_home t8)"; C8="$(cfg "$H8")"; cp -a "$C8/printer.cfg" "$ROOT/p8.cfg"
+inst "$H8" "$A_ALL"
+inst "$H8" 'y\n' --uninstall
+check "uninstall finished"                          test "$RC" -eq 0
+check "includes removed"                            bash -c '! grep -q "wm_ace" "$0"' "$C8/printer.cfg"
+check "cfgs removed"                                test ! -e "$C8/rpi_ace.cfg"
+check "links removed"                               test ! -e "$H8/klipper/klippy/extras/ace"
+check "uninstall put the original Fluidd back"      test -f "$H8/fluidd/assets/old.js"
+check "uninstall: panel gone from Fluidd"           bash -c '! grep -rq "ACE feeder" "$0"' "$H8/fluidd/assets"
+check "uninstall kept Fluidd config.json"           grep -q '"x":1' "$H8/fluidd/config.json"
+check "original Fluidd copy was saved for good"     test -f "$H8/ultra-backup/installer/acepro-panel/original-fluidd/assets/old.js"
+inst "$H8" 'y\n' --undo
+check "undo after uninstall brings cfgs back"       test -f "$C8/rpi_ace.cfg"
+check "undo after uninstall brings the panel back"  grep -rlq "ACE feeder" "$H8/fluidd/assets"
+for n in 1 2 3 4 5 6 7; do mkdir -p "$H8/fluidd_backup_2020010$n"; touch -d "2020-01-0$n" "$H8/fluidd_backup_2020010$n"; done
+inst "$H8" "$A_ALL"
+check "original Fluidd copy survives pruning"       test -f "$H8/ultra-backup/installer/acepro-panel/original-fluidd/assets/old.js"
+check "original Fluidd copy is not overwritten"     bash -c '! grep -rq "ACE feeder" "$0"' "$H8/ultra-backup/installer/acepro-panel/original-fluidd/assets"
+
+echo "9. Repair"
+H9="$(new_home t9)"; C9="$(cfg "$H9")"
+inst "$H9" "$A_ALL"
+rm -f "$H9/klipper/klippy/extras/ace"; sed -i '/rpi_ace.cfg/d' "$C9/printer.cfg"
+inst "$H9" "" --check;  check "--check finds the damage"  test "$RC" -ne 0
+inst "$H9" "" --repair; check "--repair finished"          test "$RC" -eq 0
+inst "$H9" "" --check;  check "--check passes again"       test "$RC" -eq 0
+
+echo "10. No ACE Pro (panel + endless spool only)"
+H10="$(new_home t10)"; C10="$(cfg "$H10")"; cp -a "$C10/printer.cfg" "$ROOT/p10.cfg"
+inst "$H10" 'n\ny\ny\ny\n'
+check "installer finished"                          test "$RC" -eq 0
+check "rpi_endless.cfg written"                      test -f "$C10/rpi_endless.cfg"
+check "no ACE cfgs"                                 test ! -e "$C10/rpi_ace.cfg" -a ! -e "$C10/rpi_ace_driver.cfg"
+check "rpi_stats.cfg written (counters, tool map)"    test -f "$C10/rpi_stats.cfg"
+check "only endless and stats includes added"       bash -c 'grep -q "include rpi_endless.cfg" "$0" && grep -q "include rpi_stats.cfg" "$0" && ! grep -q "wm_ace" "$0"' "$C10/printer.cfg"
+check "driver not linked"                           test ! -e "$H10/klipper/klippy/extras/ace"
+check "Fluidd has the panel"                        grep -rlq "ACE feeder" "$H10/fluidd/assets"
+check "conf says ACE=0"                             grep -q '^ACE="0"' "$C10/rpi-ultra-install.conf"
+inst "$H10" "" --check;  check "--check passes"     test "$RC" -eq 0
+inst "$H10" 'n\n' --update; check "update keeps panel-only mode" bash -c '! test -e "$0/rpi_ace.cfg"' "$C10"
+inst "$H10" 'y\n' --uninstall; check "uninstall finished"  test "$RC" -eq 0
+check "printer.cfg back to the original"            cmp -s "$ROOT/p10.cfg" "$C10/printer.cfg"
+H11="$(new_home t11)"
+inst "$H11" 'n\nn\nn\n'
+check "nothing selected is refused"                 test "$RC" -eq 1
+
+echo
+echo "Menu"
+HM="$(new_home tm)"
+menu() { OUT="$(printf '%b' "$1" | ACE_INSTALL_HOME="$HM" ACE_INSTALLER_TEST=1 ACE_MENU_TEST=1 ACE_TEST_NEW_VERSION="${2:-}" bash "$INST" 2>&1)"; RC=$?; }
+menu '0\n'
+check "menu opens with no options"                  bash -c 'echo "$0" | grep -q "6) Uninstall"' "$OUT"
+check "menu has Update and Dry run"                 bash -c 'echo "$0" | grep -q "2) Update" && echo "$0" | grep -q "5) Dry run"' "$OUT"
+menu '2\n1\n0\n0\n0\n' 9.9.9
+check "see what is new shows both versions"         bash -c 'echo "$0" | grep -q "newest on GitHub: v9.9.9"' "$OUT"
+menu '3\n1\n0\n0\n0\n'
+check "menu check runs"                             bash -c 'echo "$0" | grep -q "ACE Pro check"' "$OUT"
+menu '4\n1\n0\n0\n'
+check "backup menu says no backups"                 bash -c 'echo "$0" | grep -q "No backups yet"' "$OUT"
+menu '9\n0\n'
+check "bad number is refused"                       bash -c 'echo "$0" | grep -q "Choose a number"' "$OUT"
+menu '5\ny\ny\ny\ny\ny\n0\n'
+check "menu dry run changes nothing"                test ! -e "$(cfg "$HM")/rpi_ace.cfg"
+OUT="$(printf '' | bash "$INST" 2>&1 </dev/null)"
+check "no terminal and no options does not hang on a menu" bash -c '! echo "$0" | grep -q "6) Uninstall"' "$OUT"
+GL="$ROOT/gl"; mkdir -p "$GL/src"; cp "$REPO/installer.sh" "$GL/src/"; echo 7.7.7 > "$GL/src/VERSION"; tar -czf "$GL/t.tgz" -C "$GL" src
+cp -a "$REPO" "$ROOT/copy"; rm -rf "$ROOT/copy/.git"
+OUT="$(ACE_TEST_TARBALL="$GL/t.tgz" ACE_INSTALLER_TEST=1 bash "$ROOT/copy/installer.sh" --get-latest 2>&1)"
+check "--get-latest without git refreshes the folder" test "$(tr -d '[:space:]' < "$ROOT/copy/VERSION")" = 7.7.7
+# a newer installer is longer: copying it over the running script in place made bash read the new file at the old end ("syntax error near unexpected token")
+GB="$ROOT/glb"; mkdir -p "$GB/src"; cp "$REPO/installer.sh" "$GB/src/"; python3 -I -c "import sys; L=open(sys.argv[1]).read().split(chr(10)); L[40:40]=['# padding %d to make the downloaded installer longer than the running one' % i for i in range(40)]; open(sys.argv[1],'w').write(chr(10).join(L))" "$GB/src/installer.sh"; echo 7.7.8 > "$GB/src/VERSION"; tar -czf "$GB/t.tgz" -C "$GB" src
+cp -a "$REPO" "$ROOT/copyb"; rm -rf "$ROOT/copyb/.git"
+OUT="$(ACE_TEST_TARBALL="$GB/t.tgz" ACE_INSTALLER_TEST=1 bash "$ROOT/copyb/installer.sh" --get-latest 2>&1)"
+check "--get-latest with a longer new installer prints no syntax error" bash -c '! echo "$0" | grep -qi "syntax error"' "$OUT"
+
+OUT="$(printf '2\n2\nn\nn\nn\nn\n0\n' | ACE_TEST_TARBALL="$GL/t.tgz" ACE_MENU_TEST=1 ACE_INSTALLER_TEST=1 ACE_INSTALL_HOME="$HM" bash "$ROOT/copy/installer.sh" 2>&1)"
+check "Update now restarts the menu on the new version" bash -c 'echo "$0" | grep -q "installer v7.7.7"' "$OUT"
+OUT="$(printf '2\n2\n0\n0\n' | ACE_TEST_TARBALL="$GL/t.tgz" ACE_MENU_TEST=1 ACE_INSTALLER_TEST=1 ACE_INSTALL_HOME="$ROOT/emptyhome" bash "$ROOT/copy/installer.sh" 2>&1)"
+check "Update now with nothing installed explains it instead of a red error" bash -c 'echo "$0" | grep -q "Nothing is installed on this machine yet" && ! echo "$0" | grep -q "Can.t continue"' "$OUT"
+echo
+echo "Factory screen board: clock and apt"
+HF="$(new_home tf)"
+inst() { local h="$1" answers="$2"; shift 2
+    OUT="$(printf '%b' "$answers" | ACE_INSTALL_HOME="$h" ACE_INSTALLER_TEST=1 ${ACE_TEST_FACTORY_BOARD:+ACE_TEST_FACTORY_BOARD=$ACE_TEST_FACTORY_BOARD} bash "$INST" "$@" 2>&1)"; RC=$?; }
+inst "$HF" "$A_ALL"
+check "not a factory board: no clock or apt step"   bash -c '! echo "$0" | grep -q "factory screen board"; ! test -f "$1/.sudo.log"' "$OUT" "$HF"
+HG="$(new_home tg)"
+OUT="$(printf '%b' "y\n$A_ALL" | ACE_TEST_FACTORY_BOARD=1 ACE_INSTALL_HOME="$HG" ACE_INSTALLER_TEST=1 bash "$INST" 2>&1)"
+check "factory board: the clock and apt step runs"  bash -c 'echo "$0" | grep -q "This is the factory screen board"' "$OUT"
+check "factory board: NTP turned on"                grep -q "timedatectl set-ntp true" "$HG/.sudo.log"
+check "factory board: apt date check switched off"  grep -q "99no-check-valid-until" "$HG/.sudo.log"
+HH="$(new_home th)"
+OUT="$(printf '%b' "$A_ALL" | ACE_TEST_NTP_SYNCED=yes ACE_TEST_FACTORY_BOARD=1 ACE_INSTALL_HOME="$HH" ACE_INSTALLER_TEST=1 bash "$INST" --dry-run 2>&1)"
+check "factory board dry run changes nothing"       bash -c '! grep -q "timedatectl" "$0/.sudo.log" 2>/dev/null' "$HH"
+OUT="$(ACE_INSTALL_HOME="$HH" ACE_INSTALLER_TEST=1 bash "$INST" --fix-clock 2>&1)"
+check "--fix-clock elsewhere says nothing to fix"   bash -c 'echo "$0" | grep -q "nothing to fix"' "$OUT"
+echo
+echo "sudo group (item 35)"
+HS="$(new_home tsg)"
+OUT="$(printf '%b' "$A_ALL" | SUDO_USER=tester ACE_TEST_IN_SUDO_GROUP=0 ACE_INSTALL_HOME="$HS" ACE_INSTALLER_TEST=1 bash "$INST" 2>&1)"
+check "user not in the sudo group: added automatically, no question" grep -q "usermod -aG sudo tester" "$HS/.sudo.log"
+check "the user is told it takes effect at the next login"       bash -c 'echo "$0" | grep -q "added to the sudo group"' "$OUT"
+HS2="$(new_home tsg2)"
+OUT="$(printf '%b' "$A_ALL" | SUDO_USER=tester ACE_TEST_IN_SUDO_GROUP=1 ACE_INSTALL_HOME="$HS2" ACE_INSTALLER_TEST=1 bash "$INST" 2>&1)"
+check "user already in the sudo group: nothing is run"           bash -c '! grep -q "usermod" "$0/.sudo.log" 2>/dev/null' "$HS2"
+HS3="$(new_home tsg3)"
+OUT="$(printf '%b' "$A_ALL" | SUDO_USER=tester ACE_TEST_IN_SUDO_GROUP=0 ACE_INSTALL_HOME="$HS3" ACE_INSTALLER_TEST=1 bash "$INST" --dry-run 2>&1)"
+check "dry run only says it would add the user"                  bash -c 'echo "$1" | grep -q "would add tester to the sudo group" && ! grep -q "usermod" "$0/.sudo.log" 2>/dev/null' "$HS3" "$OUT"
+HS4="$(new_home tsg4)"
+OUT="$(printf '%b' "$A_ALL" | SUDO_USER=root ACE_TEST_IN_SUDO_GROUP=0 ACE_INSTALL_HOME="$HS4" ACE_INSTALLER_TEST=1 bash "$INST" 2>&1)"
+check "running as root: no sudo group change"                    bash -c '! grep -q "usermod" "$0/.sudo.log" 2>/dev/null' "$HS4"
+echo
+echo "Free up disk space"
+FB="$ROOT/fsb"; FT="$ROOT/fst"; mkdir -p "$FB/.cache/pip" "$FB/printer_data/logs" "$FB/printer_data/gcodes" "$FT/tmp.AAA/orca_plugin" "$FT/tmp.keep"
+dd if=/dev/zero of="$FB/.cache/pip/x" bs=1M count=3 2>/dev/null; dd if=/dev/zero of="$FT/tmp.AAA/pad" bs=1M count=3 2>/dev/null
+echo 1.0.0 > "$FT/tmp.AAA/VERSION"; touch "$FT/tmp.AAA/installer.sh"; echo mine > "$FT/tmp.keep/file"; echo gcode > "$FB/printer_data/gcodes/a.gcode"
+dd if=/dev/zero of="$FB/printer_data/logs/klippy.log.1" bs=1M count=2 2>/dev/null
+fsx() { local ans="$1"; shift; printf "$ans" | ACE_TEST_TMP="$FT" ACE_INSTALL_HOME="$FB" ACE_INSTALLER_TEST=1 ACE_TEST_APT_KB=204800 ACE_TEST_JOURNAL_KB=102400 "$@" bash "$INST" --free-space 2>&1; }
+fsx '\n' env > "$ROOT/fs1.out"
+check "free space: lists what can go, with sizes and warnings" bash -c 'grep -q "Leftover installer downloads" "$0" && grep -q "apt package cache" "$0" && grep -q "Old rotated printer logs" "$0" && grep -q "never in this list" "$0"' "$ROOT/fs1.out"
+check "free space: Enter cancels and erases nothing" bash -c '[ -d "$0/tmp.AAA" ] && [ -d "$1/.cache/pip" ]' "$FT" "$FB"
+fsx '1\nn\n' env > "$ROOT/fs2.out"
+check "free space: warning and 'This will ERASE' before the confirmation; no erases nothing" bash -c 'grep -q "This will ERASE" "$0" && grep -q "Copies of this installer" "$0" && [ -d "$1/tmp.AAA" ]' "$ROOT/fs2.out" "$FT"
+fsx '1\ny\n' env >/dev/null
+check "free space: erases only the chosen item after confirming" bash -c '[ ! -d "$0/tmp.AAA" ] && [ -d "$0/tmp.keep" ] && [ -d "$1/.cache/pip" ] && [ -f "$1/printer_data/gcodes/a.gcode" ]' "$FT" "$FB"
+fsx 'all\ny\n' env >/dev/null
+check "free space: all uses sudo for apt and the journal, keeps gcode and the real repository" bash -c 'grep -q "apt-get clean" "$0/.sudo.log" && grep -q "vacuum-size=50M" "$0/.sudo.log" && [ ! -d "$0/.cache/pip" ] && [ ! -f "$0/printer_data/logs/klippy.log.1" ] && [ -f "$0/printer_data/gcodes/a.gcode" ] && [ -d "$1/.git" -o ! -e "$1/.git" ]' "$FB" "$REPO"
+check "free space: the menu has the entry"        bash -c 'printf "7\n0\n0\n" | ACE_MENU_TEST=1 ACE_INSTALLER_TEST=1 ACE_INSTALL_HOME="$0" bash "$1" 2>&1 | grep -q "Free up disk space"' "$FB" "$INST"
+HL="$(new_home tl)"
+OUT="$(ACE_TEST_DISK_MB=100 ACE_INSTALL_HOME="$HL" ACE_INSTALLER_TEST=1 bash "$INST" </dev/null 2>&1)"
+check "install: not enough space and no terminal stops with the --free-space hint" bash -c 'echo "$0" | grep -q "free-space"' "$OUT"
+HM2="$(new_home tm2)"; mkdir -p "$HM2/.cache/pip"; dd if=/dev/zero of="$HM2/.cache/pip/x" bs=1M count=3 2>/dev/null; mkdir -p "$FT/tmp.AAA/orca_plugin"; dd if=/dev/zero of="$FT/tmp.AAA/pad" bs=1M count=3 2>/dev/null; echo 1 > "$FT/tmp.AAA/VERSION"; touch "$FT/tmp.AAA/installer.sh"
+OUT="$(printf 'y\n1\ny\n%b' "$A_ALL" | ACE_TEST_FREE_OFFER=1 ACE_TEST_DISK_MB=299 ACE_TEST_TMP="$FT" ACE_INSTALL_HOME="$HM2" ACE_INSTALLER_TEST=1 bash "$INST" 2>&1)"
+check "install: not enough space offers the cleanup, warns, then goes on" bash -c 'echo "$0" | grep -q "Only 299 MB free" && echo "$0" | grep -q "This will ERASE" && echo "$0" | grep -q "Disk space ok"' "$OUT"
+echo
+echo "Doctor, support bundle and progress bars"
+DH="$(new_home doc)"
+inst "$DH" "$A_ALL"
+check "install shows a progress bar that reaches 100 percent" bash -c 'echo "$0" | grep -q "100%  Done"' "$OUT"
+check "install bar names its steps"                 bash -c 'echo "$0" | grep -q "Step 3 of 5"' "$OUT"
+inst "$DH" "" --doctor
+check "doctor on a healthy install finds nothing"   bash -c 'echo "$0" | grep -q "No problems found"' "$OUT"
+rm -f "$(cfg "$DH")/rpi_ace.cfg"
+inst "$DH" "n\n" --doctor
+check "doctor reports the missing file" bash -c 'echo "$0" | grep -q "are missing"' "$OUT"
+check "doctor changes nothing when you say no"      test ! -e "$(cfg "$DH")/rpi_ace.cfg"
+inst "$DH" "y\n" --doctor
+check "doctor restores the file when you say yes"   test -e "$(cfg "$DH")/rpi_ace.cfg"
+echo "password: hunter2 on 192.168.1.50" >> "$(cfg "$DH")/moonraker.conf"
+inst "$DH" "" --support-bundle
+check "support bundle is written"                   bash -c 'ls "$0"/ace-support-*.tgz' "$DH"
+BX="$ROOT/bx"; mkdir -p "$BX"; tar xzf "$DH"/ace-support-*.tgz -C "$BX"
+check "support bundle report has the USB tree and serial port sections" bash -c 'grep -q "usb tree" "$0/ace-support/system.txt" && grep -q "serial ports the ACE driver sees" "$0/ace-support/system.txt"' "$BX"
+check "support bundle removes passwords and private addresses" bash -c '! grep -rq "hunter2\|192.168.1.50" "$0"' "$BX"
+check "support bundle has the system report and configs" bash -c 'test -s "$0/ace-support/system.txt" && test -s "$0/ace-support/config/printer.cfg"' "$BX"
+menu '3\n3\n0\n0\n0\n'
+check "check and fix menu has Doctor and Support bundle" bash -c 'echo "$0" | grep -q "3) Doctor" && echo "$0" | grep -q "4) Support bundle"' "$OUT"
+
+echo "Progress bar never gets in the way of a question"
+bar_check() {   # script-with-progress_bar : the bar is printed once, never redrawn, and no background job is started
+    local LB; LB="$(mktemp -d)"
+    cat > "$LB/lt.sh" <<EOT
+GREEN=; NC=; TESTING=0; DRY=0
+eval "\$(sed -n '/^prog_repeat()/p;/^progress_bar()/,/^}/p' $1)"
+progress_bar 1 5 "Step 2 of 5"; read -r -p "question? " a; echo "[\$a]"; sleep 2; jobs -p | wc -l
+EOT
+    python3 - "$LB/lt.sh" <<'EOP'
+import pty,os,struct,fcntl,termios,time,sys
+pid,fd=pty.fork()
+if pid==0: os.execvp('bash',['bash',sys.argv[1]])
+fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
+out=b''; t=time.time(); sent=False
+while time.time()-t<6:
+    try: d=os.read(fd,4096)
+    except OSError: break
+    if not d: break
+    out+=d
+    if b'question?' in out and not sent: time.sleep(1.2); os.write(fd,b'hello\n'); sent=True
+sys.exit(0 if out.count(b'Step 2 of 5')==1 and b'\x1b[' not in out.replace(b'\x1b[0m',b'').replace(b'\x1b[0;32m',b'') and b'[hello]' in out and b'\n0' in out.replace(b'\r',b'') else 1)
+EOP
+}
+check "fluidd installer: the bar is printed once and a question after it stays clean" bar_check $INST
+check "get-latest: the download in /tmp is removed on Ctrl-C" grep -qF 'trap '"'"'rm -rf "$tmp"; exit 130'"'"' INT TERM' "$INST"
+echo "ACE load hooks in extruder0..3.cfg"
+HK="$(new_home hooks)"; CHK="$(cfg "$HK")"
+for n in 0 1 2 3; do
+    printf '[filament_switch_sensor filament%s]\npause_on_runout: False\ninsert_gcode:\n    {%% set s = 1 %%}\n    {%% if s %%}\n        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        filament_insert\n        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=1\n        T%s\n        PARK_CURRENT_TOOL\n    {%% endif %%}\n\n[delayed_gcode delayed_pause%s]\ngcode:\n    PAUSE\n' "$n" "$n" "$n" > "$CHK/extruder$n.cfg"
+done
+cp -a "$CHK" "$ROOT/hooks-orig"
+inst "$HK" "$A_ALL"
+check "install: the three hook lines are added to every extruder cfg" bash -c 'for n in 0 1 2 3; do f="$0/extruder$n.cfg"; grep -q "^    _WM_ACE_HEAD T=$n$" "$f" && grep -q "^        _WM_ACE_GRAB T=$n$" "$f" && grep -q "^        _WM_ACE_HEAD_DONE T=$n$" "$f" || exit 1; done' "$CHK"
+check "install: the hooks sit in the right places (head first, grab before filament_insert, done after PARK_CURRENT_TOOL)" bash -c 'f="$0/extruder2.cfg"; [ "$(sed -n "/^insert_gcode:/{n;p}" "$f")" = "    _WM_ACE_HEAD T=2" ] && grep -A1 "_WM_ACE_GRAB T=2" "$f" | grep -q "^        filament_insert$" && grep -B1 "_WM_ACE_HEAD_DONE T=2" "$f" | grep -q PARK_CURRENT_TOOL' "$CHK"
+cp -a "$CHK" "$ROOT/hooks-after"
+inst "$HK" 'n\ny\n' --update
+check "update: hooks are not added twice" bash -c 'for n in 0 1 2 3; do cmp -s "$0/hooks-after/extruder$n.cfg" "$1/extruder$n.cfg" || exit 1; done' "$ROOT" "$CHK"
+check "the extruder cfgs were backed up before the first change" bash -c 'ls "$0"/wm-rpi-backup/wm-*/files"$1"/extruder0.cfg >/dev/null 2>&1 || ls "$0"/*/wm-*/files"$1"/extruder0.cfg >/dev/null 2>&1 || find "$0" -path "*files*extruder0.cfg" | grep -q .' "$HK" "$CHK"
+check "--check reports the hooks" bash -c 'ACE_INSTALL_HOME="$0" ACE_INSTALLER_TEST=1 bash "$1" --check 2>&1 | grep -q "ACE load hooks are in"' "$HK" "$INST"
+echo "# a file that does not look like WonderMaker's is left alone" >> /dev/null
+HK2="$(new_home hooks2)"; CHK2="$(cfg "$HK2")"; printf '[filament_switch_sensor filament0]\ninsert_gcode:\n    M117 hi\n' > "$CHK2/extruder0.cfg"; cp "$CHK2/extruder0.cfg" "$ROOT/hooks2.before"
+inst "$HK2" "$A_ALL"
+check "a file without the expected anchors is not touched and a warning is shown" bash -c 'cmp -s "$0/hooks2.before" "$1/extruder0.cfg" && echo "$2" | grep -q "NOANCHOR"' "$ROOT" "$CHK2" "$OUT"
+inst "$HK" 'y\n' --uninstall
+check "uninstall: the hook lines are gone and the cfgs are as before" bash -c 'for n in 0 1 2 3; do cmp -s "$0/hooks-orig/extruder$n.cfg" "$1/extruder$n.cfg" || exit 1; done' "$ROOT" "$CHK"
+
+echo "Fluidd macro categories"
+check "categories: rules, never-touch-user-changes and fake Moonraker tests pass" bash -c 'python3 -I "$0/tests/test_fluidd_categories.py" | tail -1 | grep -q "failed: 0"' "$REPO"
+check "macros: counters, print time per toolhead, feed assist (B-040) and the other new macros render right" bash -c 'python3 -I "$0/tests/test_macros.py" | tail -1 | grep -q "failed: 0"' "$REPO"
+check "Fluidd zip: Unload Menu button, Dock and Tool lock lights, print time, touchscreen line from wm_screen_status.json" bash -c 'j="$(unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js")"; for t in "Unload Menu" "WM_UNLOAD_MENU" "Lock motor home" "wm_stat_time" "wm_screen_status.json" "_WM_STATS_TICK"; do echo "$j" | grep -q "$t" || exit 1; done' "$REPO"
+check "Fluidd patch: the new Toolheads card commit is in the series" grep -q "Subject: \[PATCH 26/33\] feat(zr): unload menu, sensor lights, board line" "$REPO/fluidd/fluidd-v1.38.0-zr-ace.patch" && grep -q "Subject: \[PATCH 27/33\] feat(zr): endless spool section" "$REPO/fluidd/fluidd-v1.38.0-zr-ace.patch"
+FCH="$(new_home fcat)"
+ACE_MOONRAKER_URL=http://127.0.0.1:1 inst "$FCH" "$A_ALL"
+check "install: with Moonraker unreachable the install still finishes and says how to run it later" bash -c 'echo "$0" | grep -q "Fluidd macro categories" && echo "$0" | grep -q "fluidd-categories" && echo "$0" | grep -q "installed"' "$OUT"
+check "install plan mentions the Fluidd macro categories" bash -c 'echo "$0" | grep -q "Fluidd macros: at the end, sorted into categories"' "$OUT"
+OUT="$(ACE_MOONRAKER_URL=http://127.0.0.1:1 ACE_INSTALL_HOME="$FCH" ACE_INSTALLER_TEST=1 bash "$INST" --fluidd-categories 2>&1)"; RC=$?
+check "--fluidd-categories on its own says it could not reach Moonraker, and the install files are not touched" bash -c 'echo "$0" | grep -q "not done"' "$OUT"
+H2="$(new_home fcat2)"; inst "$H2" "$A_ALL"
+check "without a Moonraker address the tests never try to reach one" bash -c '! echo "$0" | grep -q "Fluidd macro categories"' "$OUT"
+check "--dry-run does not run it" bash -c 'ACE_MOONRAKER_URL=http://127.0.0.1:1 ACE_INSTALL_HOME="$0" ACE_INSTALLER_TEST=1 bash "$1" --fluidd-categories --dry-run 2>&1 | grep -q "not done" && exit 1; exit 0' "$FCH" "$INST"
+check "--help lists --fluidd-categories" bash -c 'bash "$0" --help | grep -q -- "--fluidd-categories"' "$INST"
+
+echo "Fluidd build: Chamber light button"
+check "Fluidd zip: Endless spool section (Swap automatically, sets), the chain field is gone" bash -c 'j="$(unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js")"; echo "$j" | grep -q "Swap automatically" && echo "$j" | grep -q "zr-endless-ring" && echo "$j" | grep -q "WM_ENDLESS_SET AUTO=" && ! echo "$j" | grep -q "WM_ENDLESS_CHAIN_SET"' "$REPO"
+check "rpi_endless.cfg: automatic swap watcher, no chain macro, no first purge" bash -c 'f="$0/config/rpi_endless.cfg"; grep -q "^\[delayed_gcode _WM_ENDLESS_WATCH\]" "$f" && grep -q "^\[gcode_macro _WM_ENDLESS_4\]" "$f" && ! grep -q "WM_ENDLESS_CHAIN_SET\|E_axis_move\|variable_hop" "$f"' "$REPO"
+check "Fluidd patch 28 and zip: Swap on a tangle, Fixed button (WM_ENDLESS_FIXED), ACE spools, Tangle light" bash -c 'grep -q "Subject: \[PATCH 28/33\] feat(zr): endless spool: swap on a tangle" "$0/fluidd/fluidd-v1.38.0-zr-ace.patch" && j="$(unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js")" && echo "$j" | grep -q "Swap on a tangle" && echo "$j" | grep -q "WM_ENDLESS_FIXED T=" && echo "$j" | grep -q "WM_ENDLESS_SET TANGLE=" && echo "$j" | grep -q "spool empty at the ACE" && echo "$j" | grep -q "Tangle sensor at the hub"' "$REPO"
+check "rpi_endless.cfg: tangle swap macros; the hub sensors are never read as filament sensors" bash -c 'f="$0/config/rpi_endless.cfg"; grep -q "^\[gcode_macro _WM_ENDLESS_TANGLE\]" "$f" && grep -q "^\[gcode_macro _WM_ENDLESS_FIXED\]" "$f" && ! grep -q "filament_switch_sensor path_" "$f"' "$REPO"
+check "Fluidd patch 29 and zip: pictures in a window (action:prompt_image), the three tool setter pictures, a name is never a path" bash -c 'grep -q "Subject: \[PATCH 29/33\] feat(zr): pictures in a prompt window" "$0/fluidd/fluidd-v1.38.0-zr-ace.patch" && grep -q "case .image.: {" "$0/fluidd/fluidd-v1.38.0-zr-ace.patch" && grep -q "a-z0-9-" "$0/fluidd/fluidd-v1.38.0-zr-ace.patch" && for n in setter-height setter-place setter-compare; do unzip -l "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" | grep -q "img/wm/$n.svg" || exit 1; done; unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js" | grep -q "img/wm/"' "$REPO"
+check "Fluidd patch 30 and 31, and zip: endless spool section and toolhead tiles fit a phone (container queries)" bash -c 'grep -q "Subject: \[PATCH 30/33\] fix(zr): endless spool section in one column" "$0/fluidd/fluidd-v1.38.0-zr-ace.patch" && grep -q "Subject: \[PATCH 31/33\] fix(zr): toolhead tiles and chamber row on a phone" "$0/fluidd/fluidd-v1.38.0-zr-ace.patch" && grep -q "@container" "$0/fluidd/fluidd-v1.38.0-zr-ace.patch" && unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.css" | grep -q "@container"' "$REPO"
+check "rpi_ace.cfg F-106: the ACE unload uses the shared tip forming when _WM_UNLOAD_TIP exists, and keeps the old moves when it does not" bash -c 'grep -q "gcode_macro _WM_UNLOAD_TIP" "$0/config/rpi_ace.cfg" && grep -q "_WM_UNLOAD_TIP T={t} S=" "$0/config/rpi_ace.cfg" && grep -q "G1 E-{snap_mm}" "$0/config/rpi_ace.cfg"' "$REPO"
+check "Fluidd zip matches its sha256 file" bash -c 'cd "$0/fluidd" && sha256sum -c fluidd-v1.38.0-zr-ace.zip.sha256' "$REPO"
+check "Fluidd zip: the Chamber light button switches the Moonraker power device chamber_light" bash -c 'unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js" | grep -q "chamber_light"' "$REPO"
+check "Fluidd zip: the old direct call to the screen board is gone (no rpi_chamber_light.json)" bash -c '! unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js" | grep -q "rpi_chamber_light.json"' "$REPO"
+check "Fluidd patch carries the Moonraker chamber light commit" grep -q "chamber light button uses the Moonraker power" "$REPO/fluidd/fluidd-v1.38.0-zr-ace.patch"
+check "Fluidd patch carries the Chamber light commit" grep -q "Chamber light button beside AIR FILTER" "$REPO/fluidd/fluidd-v1.38.0-zr-ace.patch"
+check "Fluidd patch: Choose toolheads window always opens on Print" grep -q "Always open the Choose toolheads window" "$REPO/fluidd/fluidd-v1.38.0-zr-ace.patch"
+check "Fluidd zip holds the ACE Pro off banner (Turn on)" bash -c 'unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js" | grep -q "ACE Pro support is turned off"' "$REPO"
+check "Fluidd zip: print hook no longer passes auto" bash -c '! unzip -p "$0/fluidd/fluidd-v1.38.0-zr-ace.zip" "assets/*.js" | grep -q "zr-print-dialog\",{filename:[a-z],auto:!0}"' "$REPO"
+
+echo "Rename wm_ -> rpi_ (1.6.0)"
+HR="$(new_home ren)"; CR="$(cfg "$HR")"
+inst "$HR" "$A_ALL"
+# make it look like an install from before 1.6.0: old file names, old include lines, old install record
+for n in ace_driver ace endless stats; do mv "$CR/rpi_$n.cfg" "$CR/wm_$n.cfg"; done
+mv "$CR/rpi-ultra-install.conf" "$CR/wm-ultra-install.conf"
+sed -i -E 's/\[include rpi_(ace_driver|ace|endless|stats)\.cfg\]/[include wm_\1.cfg]/' "$CR/printer.cfg"
+sed -i 's/^variable_keeps:.*/variable_keeps: 0/' "$CR/wm_endless.cfg"
+cp "$CR/printer.cfg" "$ROOT/ren_printer_before.cfg"
+inst "$HR" 'n\ny\n' --check
+check "--check on an old-named install says to run --update" bash -c 'echo "$0" | grep -q "old wm_ names"' "$OUT"
+check "--check changes nothing (old files still there)" test -f "$CR/wm_ace.cfg"
+inst "$HR" 'n\ny\n' --update --dry-run
+check "--dry-run renames nothing" test -f "$CR/wm_ace.cfg" -a ! -e "$CR/rpi_ace.cfg"
+inst "$HR" 'n\ny\n' --update
+check "--update finished" test "$RC" -eq 0
+for f in rpi_ace_driver.cfg rpi_ace.cfg rpi_endless.cfg rpi_stats.cfg rpi-ultra-install.conf; do check "$f exists after the update" test -f "$CR/$f"; done
+for f in wm_ace_driver.cfg wm_ace.cfg wm_endless.cfg wm_stats.cfg wm-ultra-install.conf; do check "$f is gone" test ! -e "$CR/$f"; done
+check "printer.cfg includes only the rpi_ names" bash -c '! grep -qE "include wm_" "$0/printer.cfg" && test "$(grep -c "include rpi_" "$0/printer.cfg")" = 4' "$CR"
+check "no include line twice" test "$(grep -c 'include rpi_ace.cfg' "$CR/printer.cfg")" = 1
+check "SAVE_CONFIG block untouched" test "$(tail -1 "$CR/printer.cfg")" = "#*# control = pid"
+check "your changed value survives the rename (keeps 0)" grep -q '^variable_keeps: *0' "$CR/rpi_endless.cfg"
+check "a rename backup folder exists" test -n "$(ls -d "$HR"/ultra-backup/installer/acepro-panel/wm-*-rename 2>/dev/null)"
+inst "$HR" 'n\ny\n' --check
+check "--check is clean after the update" test "$RC" -eq 0
+inst "$HR" 'n\ny\n' --update
+check "a second update does not rename or fail" bash -c 'test "$0" -eq 0 && ! echo "$1" | grep -q "Renamed"' "$RC" "$OUT"
+# both names present: the new file wins, the old one is saved
+mv "$CR/rpi_stats.cfg" "$ROOT/stats.keep"; echo "# old copy" > "$CR/wm_stats.cfg"; cp "$ROOT/stats.keep" "$CR/rpi_stats.cfg"
+inst "$HR" 'n\ny\n' --update
+check "old and new both present: the old one is removed, the new one kept" bash -c 'test ! -e "$0/wm_stats.cfg" && test -f "$0/rpi_stats.cfg" && ! grep -q "# old copy" "$0/rpi_stats.cfg"' "$CR"
+# --undo of the rename gives the old names back
+inst "$HR" 'y\n' --undo
+echo "Backups in ~/ultra-backup (1.16.0)"
+HM="$(new_home mig)"; CM="$(cfg "$HM")"
+mkdir -p "$HM/acepro-backup/wm-20261110_101010/files" "$HM/acepro-backup/original-fluidd/assets" "$HM/fluidd_backup_20261110_101010/assets"
+echo orig > "$HM/acepro-backup/original-fluidd/assets/orig.js"; echo saved > "$HM/fluidd_backup_20261110_101010/assets/saved.js"
+echo '{"a":1}' > "$HM/acepro-backup/fluidd-macros-before-20261110_101010.json"
+printf 'FLUIDD %s/fluidd %s/fluidd_backup_20261110_101010\n' "$HM" "$HM" > "$HM/acepro-backup/wm-20261110_101010/manifest.txt"
+inst "$HM" 'n\n' --check
+check "migration: the undo folder and the original Fluidd are in ~/ultra-backup/installer/acepro-panel" test -f "$HM/ultra-backup/installer/acepro-panel/wm-20261110_101010/manifest.txt" -a -f "$HM/ultra-backup/installer/acepro-panel/original-fluidd/assets/orig.js"
+check "migration: the saved Fluidd copy is in ~/ultra-backup/fluidd-page/2026-11-10" test -f "$HM/ultra-backup/fluidd-page/2026-11-10/fluidd_backup_20261110_101010/assets/saved.js"
+check "migration: the macro list is in ~/ultra-backup/fluidd-macros" test -n "$(ls "$HM"/ultra-backup/fluidd-macros/*/fluidd-macros-before-20261110_101010.json 2>/dev/null)"
+check "migration: the manifest follows the moved Fluidd copy (so --undo still finds it)" grep -q "FLUIDD $HM/fluidd $HM/ultra-backup/fluidd-page/2026-11-10/fluidd_backup_20261110_101010\$" "$HM/ultra-backup/installer/acepro-panel/wm-20261110_101010/manifest.txt"
+check "migration: the old places are gone, nothing was deleted" bash -c '! ls -d "$0"/acepro-backup "$0"/fluidd_backup_* >/dev/null 2>&1' "$HM"
+inst "$HM" 'n\n' --check
+check "migration: a second run changes nothing" bash -c '[ "$(grep -c "moved ~/acepro-backup/wm-20261110" "$0"/ultra-backup/INDEX.txt)" = 1 ]' "$HM"
+HD="$(new_home migdry)"; mkdir -p "$HD/acepro-backup/wm-20261110_101010"; echo x > "$HD/acepro-backup/wm-20261110_101010/manifest.txt"
+inst "$HD" 'n\n' --check --dry-run
+check "migration: a dry run moves nothing" test -d "$HD/acepro-backup/wm-20261110_101010"
+
+echo
+echo "passed: $PASS   failed: $FAIL"
+[ "$FAIL" -eq 0 ]

@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Chamber light network service (runs as root on the TM-T1 screen board).
+GET  /light         -> {"on": true|false}
+GET  /status        -> {"version", "latest", "cpu", "screen_cpu", "mem_free_mb", "uptime_s", "klipperscreen"}: shown in the
+                       Fluidd Toolheads card (screen board line). latest = VERSION on GitHub, read at most every 6 hours.
+                       The same status (plus "time") is uploaded every 60 s to the Pi as config/wm_screen_status.json,
+                       so Fluidd reads it from Moonraker (works also when the browser cannot reach the board)
+POST /light         body {"on": true|false}  or  POST /light/toggle
+It calls the root helper /usr/local/sbin/wm-chamber-light. Moonraker on the Pi uses this service as its power device
+chamber_light (the Fluidd card, the touchscreen buttons and WM_CHAMBER_LIGHT all switch that device). The Pi's installer finds
+this service through rpi_chamber_light.json, which this service uploads to Moonraker (config folder) at start and then every 10 minutes.
+usage: wm-chamber-light-http [--port 8765] [--conf /home/t13dp/printer_data/config/KlipperScreen.conf]"""
+import argparse
+import os
+import json
+import re
+import socket
+import subprocess
+import threading
+import time
+import urllib.request
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HELPER = "/usr/local/sbin/wm-chamber-light"
+VERSION_FILES = ("/home/t13dp/KlipperScreen/panels/zr_version.txt",)
+LATEST_URL = "https://raw.githubusercontent.com/ducati1198/WM_Ultra_Vanilla_Klipper/main/VERSION"
+STATE = {"cpu": None, "screen_cpu": None, "latest": None, "latest_at": 0.0}
+
+
+def _cpu_total():
+    v = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+    return sum(v), v[3] + (v[4] if len(v) > 4 else 0)
+
+
+def _ks_pid():
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                cmd = open("/proc/%s/cmdline" % d, "rb").read().split(b"\0")
+            except OSError:
+                continue
+            if cmd and b"python" in os.path.basename(cmd[0]) and any(c.endswith(b"KlipperScreen/screen.py") for c in cmd):
+                return d                    # the python process itself, not the runuser / env wrappers around it
+    return None
+
+
+def _proc_ticks(pid):
+    f = open("/proc/%s/stat" % pid).read().rsplit(")", 1)[1].split()
+    return int(f[11]) + int(f[12])
+
+
+def sampler():
+    """Every 10 s: CPU use of the whole board (percent of all cores) and of KlipperScreen (percent of one core)."""
+    hz = os.sysconf("SC_CLK_TCK")
+    last = None
+    while True:
+        try:
+            tot, idle = _cpu_total()
+            pid = _ks_pid()
+            pt = _proc_ticks(pid) if pid else None
+            now = time.monotonic()
+            if last:
+                ltot, lidle, lpid, lpt, lnow = last
+                if tot > ltot:
+                    STATE["cpu"] = round(100.0 * (1 - (idle - lidle) / (tot - ltot)), 1)
+                STATE["screen_cpu"] = (round(100.0 * (pt - lpt) / hz / (now - lnow), 1)
+                                       if pid and pid == lpid and pt is not None and lpt is not None else None)
+            last = (tot, idle, pid, pt, now)
+        except Exception:
+            pass
+        time.sleep(10)
+
+
+def latest_version():
+    if time.time() - STATE["latest_at"] > 6 * 3600:
+        STATE["latest_at"] = time.time()
+        try:
+            STATE["latest"] = urllib.request.urlopen(LATEST_URL, timeout=4).read().decode().strip()[:20] or None
+        except Exception:
+            STATE["latest_at"] = time.time() - 6 * 3600 + 600   # try again in 10 minutes
+    return STATE["latest"]
+
+
+def status():
+    ver = None
+    for f in VERSION_FILES:
+        try:
+            ver = open(f).read().strip()[:20]
+            break
+        except OSError:
+            pass
+    mem = {}
+    for ln in open("/proc/meminfo"):
+        k, v = ln.split(":", 1)
+        mem[k] = int(v.split()[0])
+    ks = subprocess.run(["systemctl", "is-active", "KlipperScreen"], capture_output=True, text=True).stdout.strip()
+    return {"version": ver, "latest": latest_version(), "cpu": STATE["cpu"], "screen_cpu": STATE["screen_cpu"],
+            "mem_free_mb": mem.get("MemAvailable", 0) // 1024, "uptime_s": int(float(open("/proc/uptime").read().split()[0])),
+            "klipperscreen": ks}
+
+
+def helper(arg):
+    r = subprocess.run([HELPER, arg], capture_output=True, text=True, timeout=8)
+    out = (r.stdout or "").strip().splitlines()[-1:] or [""]
+    if r.returncode != 0 or out[0] not in ("on", "off"):
+        raise RuntimeError((r.stderr or "helper failed").strip())
+    return out[0] == "on"
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body):
+        data = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self._send(204, {})
+
+    def do_GET(self):
+        if self.path.rstrip("/") == "/status":
+            try:
+                return self._send(200, status())
+            except Exception as e:
+                return self._send(500, {"error": str(e)})
+        if self.path.rstrip("/") != "/light":
+            return self._send(404, {"error": "not found"})
+        try:
+            self._send(200, {"on": helper("status")})
+        except Exception as e:
+            self._send(500, {"error": str(e)})
+
+    def do_POST(self):
+        path = self.path.rstrip("/")
+        try:
+            if path == "/light/toggle":
+                return self._send(200, {"on": helper("toggle")})
+            if path != "/light":
+                return self._send(404, {"error": "not found"})
+            n = int(self.headers.get("Content-Length") or 0)
+            want = json.loads(self.rfile.read(n) or b"{}").get("on")
+            if not isinstance(want, bool):
+                return self._send(400, {"error": 'send {"on": true} or {"on": false}'})
+            self._send(200, {"on": helper("on" if want else "off")})
+        except Exception as e:
+            self._send(500, {"error": str(e)})
+
+
+def moonraker_host(conf):
+    try:
+        m = re.search(r"^\s*moonraker_host\s*[:=]\s*(\S+)", open(conf).read(), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def my_ip_towards(host):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((host, 7125))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def upload(host, name, body):
+    """Upload one small file into Moonraker's config folder on the Pi."""
+    b = uuid.uuid4().hex
+    parts = ('--%s\r\nContent-Disposition: form-data; name="root"\r\n\r\nconfig\r\n'
+             '--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
+             'Content-Type: application/json\r\n\r\n%s\r\n--%s--\r\n') % (b, b, name, body, b)
+    req = urllib.request.Request("http://%s:7125/server/files/upload" % host, parts.encode(), method="POST",
+                                 headers={"Content-Type": "multipart/form-data; boundary=" + b})
+    urllib.request.urlopen(req, timeout=8).read()
+
+
+CAMERA_PORT = 8080          # crowsnest on this board (scripts/screen_board.sh step_screen_camera)
+
+
+def camera_url(ip):
+    """http://<this board>:8080 when a camera is plugged in and crowsnest is enabled here, otherwise ''."""
+    try:
+        cams = [n for n in os.listdir("/dev/v4l/by-id") if n.endswith("-video-index0")]
+    except OSError:
+        cams = []
+    if cams and os.path.exists("/etc/systemd/system/multi-user.target.wants/crowsnest.service"):
+        return "http://%s:%d" % (ip, CAMERA_PORT)
+    return ""
+
+
+def register(conf, port):
+    """Tell the Pi where this service is: upload rpi_chamber_light.json into Moonraker's config folder."""
+    host = moonraker_host(conf)
+    if not host:
+        return False
+    upload(host, "rpi_chamber_light.json", json.dumps({"url": "http://%s:%d" % (my_ip_towards(host), port)}))
+    try:       # the camera on this board: the address of its stream, or "" when no camera is plugged in / crowsnest is not enabled here
+        upload(host, "rpi_screen_camera.json", json.dumps({"url": camera_url(my_ip_towards(host))}))
+    except Exception:
+        pass
+    return True
+
+
+def status_loop(conf):
+    """Every 60 s: the status for the Fluidd Toolheads card, as config/wm_screen_status.json on the Pi."""
+    time.sleep(25)                      # the CPU sampler needs two rounds first
+    while True:
+        try:
+            host = moonraker_host(conf)
+            if host:
+                st = status()
+                st["time"] = int(time.time())
+                upload(host, "wm_screen_status.json", json.dumps(st))
+        except Exception:
+            pass
+        time.sleep(60)
+
+
+def register_loop(conf, port):
+    wait = 5
+    while True:
+        try:
+            ok = register(conf, port)
+        except Exception:
+            ok = False
+        time.sleep(600 if ok else wait)
+        wait = min(wait * 2, 120)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--conf", default="/home/t13dp/printer_data/config/KlipperScreen.conf")
+    a = ap.parse_args()
+    threading.Thread(target=register_loop, args=(a.conf, a.port), daemon=True).start()
+    threading.Thread(target=sampler, daemon=True).start()
+    threading.Thread(target=status_loop, args=(a.conf,), daemon=True).start()
+    ThreadingHTTPServer(("0.0.0.0", a.port), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

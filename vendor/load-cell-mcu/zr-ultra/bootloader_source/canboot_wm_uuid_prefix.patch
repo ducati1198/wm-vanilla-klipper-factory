@@ -1,0 +1,15 @@
+diff --git a/src/generic/canserial.c b/src/generic/canserial.c
+index 153507c..41a738f 100644
+--- a/src/generic/canserial.c
++++ b/src/generic/canserial.c
+@@ -330,6 +330,10 @@ canserial_set_uuid(uint8_t *raw_uuid, uint32_t raw_uuid_len)
+ {
+     uint64_t hash = fasthash64(raw_uuid, raw_uuid_len, 0xA16231A7);
+     memcpy(CanData.uuid, &hash, sizeof(CanData.uuid));
++    // WonderMaker boards: the first byte of the CAN uuid is the board type (aa MCU, ac toolhead, ad EXT, ae HUB, af CELL)
++    // and the other five bytes are the first five bytes of the hash. This is what the WonderMaker firmware reports.
++    memmove(&CanData.uuid[1], &CanData.uuid[0], sizeof(CanData.uuid) - 1);
++    CanData.uuid[0] = 0xaf;
+     canserial_notify_rx();
+ }
+ 

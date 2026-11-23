@@ -1,0 +1,4405 @@
+#!/bin/bash
+
+# =============================================================================
+# WonderMaker ZR Ultra / Ultra-S  -  Raspberry Pi installer with vanilla (upstream) Klipper + Moonraker
+# =============================================================================
+# Sets up a Raspberry Pi (64-bit Raspberry Pi OS Bookworm, user t13dp) to run upstream Klipper and
+# Moonraker (pinned in this repository), WonderMaker's modules and the Fluidd panel in place of the failed screen/host board.
+#
+# ./installer.sh                       install (asks a few plain questions first)
+# ./installer.sh --import-settings IP  after installing, copy your calibration (SAVE_CONFIG block, saved variables) from the old board, read-only
+# ./installer.sh --from-github         take the factory files that are inside this repository (no printer needed)
+# ./installer.sh --model ultra|ultra-s your printer (asked if not given; sets up printer.cfg for it)
+# ./installer.sh --check               report problems, change nothing
+# ./installer.sh --free-space          list what is safe to erase (sizes, warnings), erase what you pick and confirm
+# ./installer.sh --zr-tools            check the ZR Tools macros (for the screen board), install them when missing
+# ./installer.sh --cfg-merge           bring WonderMaker's changes in this repository's factory printer.cfg (and saved_variables.cfg) to the Pi's printer.cfg with a 3-way merge; your own lines and the SAVE_CONFIG block stay (scripts/wm_cfgmerge.py)
+# ./installer.sh --extruder-setup        Extruder Setup: picks up T0-T3 and puts the tool head CAN ids in dock order (required after the ids were found by firmware name)
+# ./installer.sh --can-ids [set NAME ID]  which CAN ids in the config answer on the bus (hub, extruder board, T0-T3, load cell, main board); offers to correct wrong ones; "set T2 ac8b57e80210" sets one by hand
+# ./installer.sh --pid-cfg             check that the PID settings of the hotends and the bed are where Klipper's SAVE_CONFIG can store a PID result, and fix them (scripts/wm_pidcfg.py)
+# ./installer.sh --pi-sensors          add the chip temperature of every board and the host MCU ([mcu rpi]) to Klipper; Klipper restarts, and the change is undone when it does not come back
+# ./installer.sh --logs                the troubleshooting logs (wm-events.log, wm-config-check.log, wm-ace.log, wm-system.log, wm-blackbox.log in Fluidd > Configuration > Other Files) and the black box that records the Pi every 10 s. Also done in every install and update; the doctor checks them; --support-bundle includes them
+# ./installer.sh --ultra-backup        move every backup into ~/ultra-backup (sorted by type, 400 MB limit) and show the sizes
+# ./installer.sh --wifi                Pi on Wi-Fi (NetworkManager): Wi-Fi power saving off (and an old Wi-Fi watchdog from 2.11 to 2.19.0 is removed)
+# ./installer.sh --light               set up the chamber light as a Moonraker power device (Fluidd, touchscreen and WM_CHAMBER_LIGHT then agree); needs an installed screen board
+# ./installer.sh --rpi-cfg             install or refresh the Pi's own config files from rpi-cfg/ (calibration macros WM_BED_LEVELING, WM_FIRST_RUN_CAL, WM_FULL_OFFSET_CAL, WM_Z_TRIM_MENU, WM_UNLOAD_MENU, ...) and their include line in printer.cfg
+# ./installer.sh --first-start         checks with the main board connected; fixes canbus_uuid; then starts Klipper and the other services
+# ./installer.sh --hw-test             read-only live test: USB bridge, can0, CAN devices, camera, services
+# ./installer.sh --doctor              find problems, explain them, offer a fix for each (asks first)
+# ./installer.sh --repair              put back services, nginx files, can0 rule and groups (data untouched)
+# ./installer.sh --update              update after you pulled a new version of this repository (your printer_data is not touched)
+# ./installer.sh --check-updates       read-only: list what is new on GitHub since your copy of this repository (then: git pull, ./installer.sh --update)
+# ./installer.sh --update-all           download and apply every newer version: this installer, the Fluidd panel (ACE Pro project) and the screen boards you added; refused during a print
+# ./installer.sh --update-boards        update only the screen boards you added (--board add user@host)
+# ./installer.sh --board add|remove|list [user@host]   screen boards this Pi may update over ssh (a key is set up once; the password is asked once).
+#                                                      "--board add" alone uses the address the screen board announced (rpi_chamber_light.json)
+# ./installer.sh --get-latest          download the newest installer folder (git pull, or the GitHub tarball when this is not a clone); then run --update
+# ./installer.sh --undo [DIR]          put back the folders the installer moved aside (latest, or DIR)
+# ./installer.sh --backup [DIR]        save your config, calibration and database to a .tgz (only when you run it)
+# ./installer.sh --restore FILE        restore such a backup (a safety copy is made first)
+# ./installer.sh --rollback            go back to how your settings were before the last update (restores the newest backup that an update saved first; a safety copy is made first)
+# ./installer.sh --show-log            where the log of the last run is, and its last lines. Every run that changes something is logged to ~/wm-install-logs/ (passwords and tokens removed)
+# ./installer.sh --support-bundle      make a scrubbed .tgz of logs and config to share when asking for help
+# ./installer.sh --enable-klipper      same as --first-start
+# ./installer.sh --start-klipper       undo --disable-klipper: start Klipper now and at every boot, without the hardware checks
+# ./installer.sh --disable-klipper     stop Klipper and stop it from starting at boot
+# ./installer.sh --uninstall           remove what the installer added to the system (your files in ~ stay)
+# ./installer.sh --shell-command on|off   the Klipper "gcode shell command" extension (RUN_SHELL_COMMAND CMD=name runs a Linux command from G-code). Installed automatically; off skips it
+# ./installer.sh --load-cell           the load cell board (CELL): downloads or updates the project wm-load-cell-mcu and opens its menu (flash firmware V2, factory firmware, restore, check the bootloader). A full install does the check by itself at the end and flashes V2 when the board is not on it yet (it asks first); --no-load-cell skips that
+# ./installer.sh --menu                numbered menu (install, update, add-ons, check and fix, backup, screen, advanced). Opens by itself when you run ./installer.sh with no options on a Pi that is already installed
+# ./installer.sh --install             the normal install (skips the menu)
+# ./installer.sh --remove NAME         remove something after asking: screen, network-manager, webcam, timelapse, shell-command, shaketune, spoolman, acepro, obico, octoapp, octoeverywhere, fluidd, moonraker, klipper, data, system, cleanup (installer files: old backups, support bundles, saved copies, the installer folder), all (every program; keeps your printer data, backups and installer files) or erase (everything, including your printer data and backups; keeps only the installer folder)
+# ./installer.sh --webcam on|off       crowsnest webcam service;  --timelapse on|off   Moonraker timelapse (both used with --update)
+# ./installer.sh --cameras N --cam-resolution 480p|720p|1080p|WxH --cam-fps N --cam-mode ustreamer|camera-streamer|spyglass   webcam answers given on the command line (otherwise asked; the streamer defaults to ustreamer)
+# ./installer.sh --screen-camera yes|no   the factory camera is plugged into the factory screen board (yes: it is Camera in Fluidd, the Pi's own cameras are Camera 2 ...)
+# ./installer.sh --webcam-setup        ask the camera questions again and rewrite crowsnest.conf (a copy of the old one is kept)
+# ./installer.sh --network-manager on|off   NetworkManager for KlipperScreen's Network panel (default off: it can drop the network connection until the Pi is restarted). Add it later with: ./installer.sh --update --network-manager on
+# ./installer.sh --shaketune on|off    Klippain Shake&Tune (input shaper and vibration graphs, by Frix-x). Add-on only: not asked during the install
+# ./installer.sh --spoolman on|off     Spoolman (filament spool tracking, shown in Fluidd). Add-on only: not asked during the install
+# ./installer.sh --acepro on|off       Anycubic ACE Pro (feeder and dryer): its Klipper driver and config from the project wm-ultra-fluidd-acepro-panel. Asked during the install; add it later with --update --acepro on, remove it with --remove acepro
+# ./installer.sh --status              one read-only page: services, Klipper, Pi health, CAN ids, add-ons, newest backup
+# ./installer.sh --system-info         read-only: host name, time zone, clock, addresses, Wi-Fi
+# ./installer.sh --set-timezone NAME   for example America/Toronto (asks first)
+# ./installer.sh --set-hostname NAME   the name.local address of this Pi (asks first)
+# ./installer.sh --no-backup           with --update: skip the automatic backup that is otherwise saved first (the newest 5 are kept in ~/ultra-backup/settings)
+# ./installer.sh --obico on|off        optional remote access: Obico for Klipper (moonraker-obico). Also --octoapp on|off and --octoeverywhere on|off. Each is asked (default no)
+# ./installer.sh --screen on|off|macros   KlipperScreen on the Pi (on), nothing (off), or only the ZR Tools macros (macros: for the WonderMaker screen board). Asked if not given; default on
+# ./installer.sh --screen-layout tabs|grid   touch layout: tabs = big buttons + bottom tabs (default), grid = card grid
+# ./installer.sh --screen-backend x11|weston|cage   graphics stack for KlipperScreen (default x11)
+# ./installer.sh --screen-remove       remove KlipperScreen from this Pi (Klipper, Moonraker and Fluidd stay)
+# ./installer.sh --screen-test         read-only: show the screen and touch device found on this Pi
+# ./installer.sh --no-start            at the end of an install do not enable or start Klipper
+# ./installer.sh --force               continue even if a print is active (not recommended)
+# ./installer.sh --dry-run             go through the questions, show what would change, change nothing
+# ./installer.sh --help | --version
+#
+# What this installer never does:
+#   - It never flashes any board (main board, toolheads, hub, screen). No firmware is touched.
+#   - At the very end it enables and starts Klipper, Moonraker, nginx and crowsnest. With --no-start it starts nothing
+#     (--first-start does it later, and then stops if a check fails).
+#   - It never writes to the old board.
+#
+# Needs bash, sudo and internet access (apt, and the Python 3.9 download from astral.sh/GitHub).
+# =============================================================================
+
+set -u
+export PIP_DISABLE_PIP_VERSION_CHECK=1   # pip must not ask PyPI for a newer pip (slow links print a warning)
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; DIM='\033[2m'; NC='\033[0m'
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION" 2>/dev/null || true)"; VERSION="${VERSION:-dev}"
+
+WM_USER="t13dp"
+HOME_DIR="${WM_HOME:-$HOME}"
+TESTING="${WM_INSTALLER_TEST:-0}"        # 1 = no sudo, no apt, no systemctl, no network, no Python download
+MODE="install"
+DRY=0
+MOONRAKER_CHANGED=0; IMPORT_HOST=""; SRC_KIND=""; SRC_ARG=""; MODEL="ultra-s"; MODULES_DIR=""; FROM_FACTORY=0
+WANT_PANEL=1; WANT_SCREEN=macros; WANT_TIMELAPSE=1; WANT_CROWSNEST=1; CAM_COUNT=""; CAM_RES=""; CAM_FPS=""; CAM_MODE=""; SCREEN_CAM=""; CLI_SCREEN_CAM=""; CLI_CAM_COUNT=""; CLI_CAM_RES=""; CLI_CAM_FPS=""; CLI_CAM_MODE=""; CLI_REMOTE=""; ONLY_ADDON=""; WANT_SHELLCMD=1; OBICO_SERVER=""; WANT_OBICO=ask; WANT_OCTOAPP=ask; WANT_OCTOEVERYWHERE=ask; WANT_NETMGR=ask; WANT_SHAKETUNE=0; WANT_SPOOLMAN=0; WANT_ACEPRO=ask; NO_BACKUP=0; FIXALL=0
+SCREEN_LAYOUT=""; SCREEN_BACKEND="x11"; REPO_DIR="$SCRIPT_DIR"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_ROOT="$HOME_DIR/wm-rpi-backup"
+ULTRA="$HOME_DIR/ultra-backup"; WMB="$ULTRA/settings"   # item 36: every backup lives under ~/ultra-backup, sorted by type (settings, config, fluidd-page, fluidd-macros, installer, drivers, other)
+STATE="$BACKUP_ROOT/installed.manifest"
+CONF="$BACKUP_ROOT/install.conf"
+PANEL_REPO="ducati1198/wm-ultra-fluidd-acepro-panel"; PANEL_ZIP=""; PANEL_FROM=""; PANEL_FAILED=0
+CELL_REPO="ducati1198/wm-load-cell-mcu"; CELL_DIR="$HOME_DIR/wm-load-cell-mcu"; WANT_CELL=1   # the load cell board (CELL) firmware V2 and its flash menu live in their own repository
+FORCE=0; AUTOSTART=1; ARG1=""; OLD_VERSION=""
+STAGE=""
+declare -a WARNINGS=()
+
+APT_PACKAGES=(nginx can-utils build-essential libffi-dev libssl-dev libjpeg-dev zlib1g-dev libsodium23 liblmdb0 curl git python3-venv python3-pip iproute2 dbus usbutils)
+COMPILED_MODULES=(cs1237 hx711 heater_air_core heater_feng xy_offset_calibrator_core heater_air xy_offset_calibrator tools_calibrate echelon_stepper custom_hall)
+
+pi_weight() {   # how long each install step takes, roughly (a step that is switched off counts for nothing)
+    case "$1" in
+        1) echo 14 ;; 2) echo 1 ;; 3) echo 8 ;; 4) echo 5 ;; 4b) echo 1 ;; 4c) echo 1 ;; 4d) echo 1 ;; 4e) echo 2 ;; 4f) echo 1 ;; 5) echo 30 ;; 6) echo 2 ;; 7) echo 2 ;; 7b) echo 3 ;; 8|9) echo 2 ;; 10) echo 4 ;;
+        11) [ "${WANT_SCREEN:-0}" = 1 ] && echo 12 || echo 1 ;;
+        12) [ "${WANT_TIMELAPSE:-0}" = 1 ] && echo 2 || echo 0 ;;
+        12b) [ "${WANT_SHELLCMD:-0}" = 1 ] && echo 1 || echo 0 ;;
+        12f) [ "${WANT_SHAKETUNE:-0}" = 1 ] && echo 4 || echo 0 ;;
+        12g) [ "${WANT_SPOOLMAN:-0}" = 1 ] && echo 5 || echo 0 ;;
+        12h) [ "${WANT_ACEPRO:-0}" = 1 ] && echo 2 || echo 0 ;;
+        12c) [ "${WANT_OBICO:-0}" = 1 ] && echo 3 || echo 0 ;;
+        12d) [ "${WANT_OCTOAPP:-0}" = 1 ] && echo 3 || echo 0 ;;
+        12e) [ "${WANT_OCTOEVERYWHERE:-0}" = 1 ] && echo 3 || echo 0 ;;
+        13) [ "${WANT_CROWSNEST:-0}" = 1 ] && echo 12 || echo 0 ;;
+        14) echo 3 ;;
+        *) echo 0 ;;
+    esac
+}
+pi_cum() {   # percent-points finished when step KEY starts; "end" = the total
+    local k s sum=0
+    for k in 1 2 3 4 4b 4c 4f 4e 4d 5 6 7 7b 8 9 10 11 12 12b 12f 12g 12h 12c 12d 12e 13 14; do
+        [ "$k" = "$1" ] && { echo "$sum"; return; }
+        sum=$((sum + $(pi_weight "$k")))
+    done
+    echo "$sum"
+}
+print_header()  {
+    echo -e "\n${BLUE}── $1 ──────────────────────────────────────────${NC}"
+    if [ "${PROG_STEPS:-0}" -gt 0 ] && [[ "$1" =~ ^Step\ ([0-9]+[a-z]?) ]]; then
+        local key="${BASH_REMATCH[1]}"; progress_bar "$(pi_cum "$key")" "$(pi_cum end)" "Step ${key%%[a-z]} of $PROG_STEPS"
+    fi
+}
+PROG_STEPS=0
+prog_repeat() { local s="" i; for ((i=0;i<$2;i++)); do s+="$1"; done; printf '%s' "$s"; }
+progress_bar() {   # steps-done total label : a bar like [██████░░░░░░]  42%  label
+    local n="$1" t="$2" label="${3:-}" w=24 f pct
+    [ "$t" -gt 0 ] 2>/dev/null || return 0
+    [ "$n" -gt "$t" ] && n="$t"; [ "$n" -lt 0 ] && n=0
+    pct=$((n*100/t)); f=$((n*w/t))
+    printf '  %b[%s%s]%b %3d%%  %s\n' "$GREEN" "$(prog_repeat '█' "$f")" "$(prog_repeat '░' $((w-f)))" "$NC" "$pct" "$label"
+}
+live_bar_stop() { return 0; }   # (the bar is printed once per step; it never redraws, so it cannot get in the way of a question)
+heartbeat_start() {   # slow command ahead: say "still working" every 15 s so it does not look frozen
+    [ "$TESTING" = 1 ] || [ "$DRY" = 1 ] && return 0
+    local t0 label="$1"; t0="$(date +%s)"
+    ( while sleep 15 && kill -0 $$ 2>/dev/null; do echo -e "  ${DIM}... still working: $label ($(( ($(date +%s)-t0)/60 )) min $(( ($(date +%s)-t0)%60 )) s)${NC}"; done ) &
+    HB_PID=$!
+}
+heartbeat_stop() { [ -n "${HB_PID:-}" ] && { kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null; HB_PID=""; }; return 0; }
+
+print_info()    { echo -e "${BLUE}ℹ ${1}${NC}"; }
+print_success() { echo -e "${GREEN}✓ ${1}${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠ ${1}${NC}"; }
+print_error()   { echo -e "${RED}✗ ${1}${NC}"; }
+why()           { echo -e "  ${DIM}Why: $1${NC}"; }
+warn_later()    { WARNINGS+=("$1"); }
+die_with_fix()  { live_bar_stop; print_error "Can't continue: $1"; echo -e "  Fix: $2"; exit 1; }
+
+ask_yn() {  # prompt default(y/n)
+    local p="$1" d="${2:-y}" a
+    if [ "${REMOVE_CONFIRMED:-0}" = 1 ]; then return 0; fi   # only set by "--remove all", after the typed confirmation
+    if [ "${WM_ASSUME_YES:-0}" = 1 ]; then [ "$d" = y ]; return; fi
+    read -r -p "$(echo -e "${YELLOW}?${NC} $p [${d}] ")" a || a=""
+    a="${a:-$d}"; [[ "$a" =~ ^[Yy] ]]
+}
+run() {  # run a change; in --dry-run only show it
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: $*${NC}"; return 0; fi
+    "$@"
+}
+SUDO() {
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: sudo $*${NC}"; return 0; fi
+    if [ "$TESTING" = 1 ]; then echo "[test] sudo $*" >> "$HOME_DIR/.sudo.log"; test_systemctl "$@"; return 0; fi
+    if [ "${1:-}" = systemctl ] && { [ "${2:-}" = stop ] || [ "${2:-}" = disable ]; }; then
+        rm_event stop "Stopping the service"
+        sudo "$@" 2> >(grep -v -e 'not loaded' -e 'does not exist' >&2); return 0   # a service that is not there is already stopped
+    fi
+    sudo "$@"
+}
+record() { [ "$DRY" = 1 ] && return 0; mkdir -p "$BACKUP_ROOT"; echo "$1" >> "$STATE"; }
+
+usage() { sed -n '4,/^# What this/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
+
+# ============================================================================
+# Arguments
+# ============================================================================
+ORIG_ARGC=$#; ORIG_ARGS=("$@"); EXPLICIT_INSTALL=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from-board)   die_with_fix "--from-board was removed: the installer always uses the factory files of this repository." "to bring your calibration over use: ./installer.sh --import-settings BOARD_IP" ;;
+        --from-stage)   SRC_KIND=stage; SRC_ARG="${2:-}"; shift ;;
+        --from-github|--from-repo) SRC_KIND=repo; SRC_ARG="repo" ;;
+        --model)        MODEL="${2:-}"; MODEL_SET=1; shift ;;
+        --modules)      MODULES_DIR="${2:-}"; shift ;;
+        --check)        MODE=check ;;
+        --menu)         MODE=menu ;;
+        --install)      MODE=install; EXPLICIT_INSTALL=1 ;;
+        --remove)       MODE=remove; ARG1="${2:-}"; shift ;;
+        --webcam)       case "${2:-}" in on|yes|1) WANT_CROWSNEST=1 ;; off|no|0) WANT_CROWSNEST=0 ;; *) print_error "--webcam needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE webcam"; CLI_WEBCAM="$WANT_CROWSNEST"; shift ;;
+        --cameras)      CAM_COUNT="${2:-}"; CLI_CAM_COUNT="$CAM_COUNT"; shift ;;
+        --cam-resolution) CAM_RES="${2:-}"; CLI_CAM_RES="$CAM_RES"; shift ;;
+        --cam-fps)      CAM_FPS="${2:-}"; CLI_CAM_FPS="$CAM_FPS"; shift ;;
+        --cam-mode)     CAM_MODE="${2:-}"; CLI_CAM_MODE="$CAM_MODE"; shift ;;
+        --screen-camera) case "${2:-}" in yes|on|1) CLI_SCREEN_CAM=yes ;; no|off|0) CLI_SCREEN_CAM=no ;; *) print_error "--screen-camera needs yes or no"; exit 1 ;; esac; SCREEN_CAM="$CLI_SCREEN_CAM"; shift ;;
+        --webcam-setup) MODE=webcamsetup ;;
+        --timelapse)    case "${2:-}" in on|yes|1) WANT_TIMELAPSE=1 ;; off|no|0) WANT_TIMELAPSE=0 ;; *) print_error "--timelapse needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE timelapse"; CLI_TIMELAPSE="$WANT_TIMELAPSE"; shift ;;
+        --first-start|--enable-klipper) MODE=firststart ;;
+        --hw-test)      MODE=hwtest ;;
+        --doctor)       MODE=doctor ;;
+        --free-space)   MODE=freespace ;;   # list what is safe to erase, erase what you pick and confirm
+        --zr-tools)     MODE=zrtools ;;   # check the ZR Tools macros (for the screen board), install them when missing
+        --cfg-merge)    MODE=cfgmerge ;;  # WonderMaker's printer.cfg changes merged into the Pi's printer.cfg
+        --extruder-setup) MODE=extsetup ;;   # Extruder Setup (pick up T0-T3, put the tool head ids in dock order); forced after the ids were found by firmware name
+        --can-ids)      MODE=canids; if [ "${2:-}" = set ]; then CANID_NAME="${3:-}"; CANID_UUID="${4:-}"; shift $(( $# < 3 ? $# : 3 )); fi ;;   # which config ids answer on the CAN bus; fix wrong ones; set one by hand
+        --import-settings) MODE=importset; IMPORT_HOST="${2:-}"; [ $# -gt 1 ] && shift ;;
+        --pid-cfg)      MODE=pidcfg ;;    # PID settings in printer.cfg, where SAVE_CONFIG can store a PID result
+        --pi-sensors)   MODE=pisensors ;;
+        --logs)         MODE=logs ;;         # troubleshooting logs + black box
+        --load-cell)    MODE=loadcell ;;     # the load cell board (CELL): its flash menu from the wm-load-cell-mcu repository
+        --no-load-cell) WANT_CELL=0 ;;       # an install does not check or flash the load cell board
+        --ultra-backup) MODE=ultrabackup ;;   # one folder for every backup (item 36)
+        --wifi)         MODE=wifi ;;         # Wi-Fi power saving off (only when the Pi is on Wi-Fi with NetworkManager); removes an old Wi-Fi watchdog   # board temperature sensors + the host MCU, once Klipper runs
+        --rpi-cfg)      MODE=rpicfg ;;    # the Pi's own config files (rpi-cfg/): calibration macros
+        --light)        MODE=light ;;     # the chamber light as a Moonraker power device (needs an installed screen board)
+        --fix-all)      FIXALL=1 ;;
+        --repair)       MODE=repair ;;
+        --update)       MODE=update ;;
+        --check-updates) MODE=checkupdates ;;
+        --get-latest)   MODE=getlatest ;;
+        --update-all)   MODE=updateall ;;
+        --update-boards) MODE=updateboards ;;
+        --board)        MODE=board; BOARD_ACT="${2:-list}"; BOARD_TARGET="${3:-}"; shift $(( $# < 3 ? $# : 3 )) ;;
+        --undo)         MODE=undo; case "${2:-}" in ""|--*) ;; *) ARG1="$2"; shift ;; esac ;;
+        --backup)       MODE=backup; case "${2:-}" in ""|--*) ;; *) ARG1="$2"; shift ;; esac ;;
+        --restore)      MODE=restore; ARG1="${2:-}"; shift ;;
+        --rollback)     MODE=rollback ;;
+        --support-bundle) MODE=bundle ;;
+        --show-log)     MODE=showlog ;;
+        --shell-command) case "${2:-}" in on|yes|1) WANT_SHELLCMD=1 ;; off|no|0) WANT_SHELLCMD=0 ;; *) print_error "--shell-command needs on or off"; exit 1 ;; esac; CLI_SHELLCMD="$WANT_SHELLCMD"; shift ;;
+        --obico)        case "${2:-}" in on|yes|1) WANT_OBICO=1 ;; off|no|0) WANT_OBICO=0 ;; *) print_error "--obico needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE obico"; CLI_OBICO="$WANT_OBICO"; shift ;;
+        --octoapp)      case "${2:-}" in on|yes|1) WANT_OCTOAPP=1 ;; off|no|0) WANT_OCTOAPP=0 ;; *) print_error "--octoapp needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE octoapp"; CLI_OCTOAPP="$WANT_OCTOAPP"; shift ;;
+        --network-manager) case "${2:-}" in on|yes|1) WANT_NETMGR=1 ;; off|no|0) WANT_NETMGR=0 ;; *) print_error "--network-manager needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE netmgr"; CLI_NETMGR="$WANT_NETMGR"; shift ;;
+        --spoolman)     case "${2:-}" in on|yes|1) WANT_SPOOLMAN=1 ;; off|no|0) WANT_SPOOLMAN=0 ;; *) print_error "--spoolman needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE spoolman"; CLI_SPOOLMAN="$WANT_SPOOLMAN"; shift ;;
+        --acepro)       case "${2:-}" in on|yes|1) WANT_ACEPRO=1 ;; off|no|0) WANT_ACEPRO=0 ;; *) print_error "--acepro needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE acepro"; CLI_ACEPRO="$WANT_ACEPRO"; shift ;;
+        --no-backup)    NO_BACKUP=1 ;;
+        --status)       MODE=status ;;
+        --system-info)  MODE=sysinfo ;;
+        --set-timezone) MODE=settz; ARG1="${2:-}"; shift ;;
+        --set-hostname) MODE=sethost; ARG1="${2:-}"; shift ;;
+        --shaketune)    case "${2:-}" in on|yes|1) WANT_SHAKETUNE=1 ;; off|no|0) WANT_SHAKETUNE=0 ;; *) print_error "--shaketune needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE shaketune"; CLI_SHAKETUNE="$WANT_SHAKETUNE"; shift ;;
+        --octoeverywhere) case "${2:-}" in on|yes|1) WANT_OCTOEVERYWHERE=1 ;; off|no|0) WANT_OCTOEVERYWHERE=0 ;; *) print_error "--octoeverywhere needs on or off"; exit 1 ;; esac; CLI_REMOTE="$CLI_REMOTE octoeverywhere"; CLI_OCTOEVERYWHERE="$WANT_OCTOEVERYWHERE"; shift ;;
+        --only-addon)   ONLY_ADDON="${2:-}"; shift ;;   # used by the menu (Add-ons): with --update, touch only that add-on, not the system files, packages, panel or nginx
+        --screen)       case "${2:-}" in off|no|0) WANT_SCREEN=0 ;; macros) WANT_SCREEN=macros ;; *) print_error "--screen needs off or macros (KlipperScreen is not installed by this project: the screen board is the host)"; exit 1 ;; esac; shift ;;
+        --screen-layout) print_error "KlipperScreen is not installed by this project (the screen board is the host). Use your own touch UI."; exit 1 ;;
+        --screen-backend) print_error "KlipperScreen is not installed by this project (the screen board is the host). Use your own touch UI."; exit 1 ;;
+        --screen-test) print_error "KlipperScreen is not installed by this project (the screen board is the host). Use your own touch UI."; exit 1 ;;
+        --screen-remove) print_error "KlipperScreen is not installed by this project (the screen board is the host). Use your own touch UI."; exit 1 ;;
+        --no-start)     AUTOSTART=0 ;;
+        --force)        FORCE=1 ;;
+        --disable-klipper) MODE=disable ;;
+        --start-klipper) MODE=startklipper ;;
+        --uninstall)    MODE=uninstall ;;
+        --dry-run)      DRY=1 ;;
+        --yes)          WM_ASSUME_YES=1 ;;
+        --version)      echo "WM_Ultra_Vanilla_Klipper installer $VERSION"; exit 0 ;;
+        -h|--help)      usage; exit 0 ;;
+        *) print_error "Unknown option: $1"; usage; exit 1 ;;
+    esac
+    shift
+done
+
+# ============================================================================
+# Checks
+# ============================================================================
+refuse_wm_install() {   # this installer sets up vanilla Klipper + Moonraker; it does not convert a Pi that runs WonderMaker's own (or a wm-ultra-rpi install)
+    local why=""
+    if [ -f "$CONF" ] && grep -qE '^VERSION=1\.' "$CONF"; then why="$CONF is the record of the wm-ultra-rpi installer (version $(sed -n 's/^VERSION=//p' "$CONF" | head -n1))."
+    elif [ -f "$HOME_DIR/klipper/klippy/klippy.py" ] && [ ! -f "$HOME_DIR/klipper/klippy/extras/wm_mcu_tweaks.py" ]; then why="~/klipper is not the Klipper this installer sets up (it is WonderMaker's own, or another install)."
+    elif [ -d "$HOME_DIR/TM_T1" ] && [ -d "$HOME_DIR/klipper" ] && [ ! -f "$CONF" ]; then why="~/TM_T1 and ~/klipper are WonderMaker's own files (the original board or a wm-ultra-rpi install)."
+    fi
+    [ -z "$why" ] && return 0
+    die_with_fix "this Pi already runs WonderMaker's Klipper and Moonraker: $why This installer sets up vanilla Klipper + Moonraker on a fresh Pi and does not convert an existing WonderMaker install." \
+        "use a fresh SD card (Raspberry Pi OS Bookworm 64-bit, user $WM_USER) and run this installer there. To keep your settings, first run ./installer.sh --backup with the old installer, then ./installer.sh --restore FILE here after the install."
+}
+check_system() {
+    print_header "Checking this computer"
+    [ "$(id -un)" = "$WM_USER" ] || [ "$TESTING" = 1 ] || die_with_fix "you are user '$(id -un)', WonderMaker's software only works for user '$WM_USER' (its paths are fixed to /home/$WM_USER)." \
+        "create the user when you write the SD card with Raspberry Pi Imager (set username to $WM_USER), or: sudo adduser $WM_USER && sudo usermod -aG sudo $WM_USER, then log in as $WM_USER."
+    print_success "User is $WM_USER"
+    refuse_wm_install
+    [ "$HOME_DIR" = "/home/$WM_USER" ] || [ "$TESTING" = 1 ] || die_with_fix "home is $HOME_DIR, expected /home/$WM_USER" "log in as $WM_USER."
+    if [ "$TESTING" != 1 ]; then
+        [ "$(uname -m)" = "aarch64" ] || die_with_fix "this is $(uname -m), not 64-bit ARM." "use the 64-bit image of Raspberry Pi OS (Bookworm)."
+        print_success "64-bit ARM"
+        if [ -r /etc/os-release ] && ! grep -q 'VERSION_CODENAME=bookworm' /etc/os-release; then
+            warn_later "This is not Raspberry Pi OS Bookworm. It is tested only on Bookworm."
+        fi
+        sudo -n true 2>/dev/null || print_info "sudo will ask for your password."
+    fi
+    print_success "Computer: $(pi_model_line)"
+    local pw l; pw="$(pi_model_warning)"; [ -z "$pw" ] || while IFS= read -r l; do print_warning "$l"; warn_later "$l"; done <<< "$pw"
+    local free; free="$(disk_free_mb)"
+    if [ "${free:-0}" -le "$FREE_NEED_MB" ] && { [ -t 0 ] || [ "${WM_TEST_FREE_OFFER:-0}" = 1 ]; } && [ "${WM_ASSUME_YES:-0}" != 1 ] && [ "$DRY" != 1 ]; then
+        print_warning "Only ${free} MB free; the install needs about $FREE_NEED_MB MB."
+        echo "  I can look for files that are safe to erase and show you each one before anything is deleted."
+        ask_yn "Look for files to erase now?" y && { do_free_space; free="$(disk_free_mb)"; }
+    fi
+    [ "${free:-0}" -gt "$FREE_NEED_MB" ] || die_with_fix "only ${free} MB free." "free space first: ./installer.sh --free-space  (it shows what is safe to erase and asks before deleting), or use a bigger SD card (16 GB or more)."
+    print_success "Disk space ok (${free} MB free)"
+}
+
+
+# ---------------------------------------------------------------------------
+# Which Raspberry Pi is this (read from the device tree; nothing depends on the model, but a slow one is worth a warning)
+# ---------------------------------------------------------------------------
+pi_model() { if [ "$TESTING" = 1 ]; then echo "${WM_TEST_PI_MODEL:-Raspberry Pi 4 Model B Rev 1.4}"; else tr -d '\0' < /proc/device-tree/model 2>/dev/null; fi; }
+pi_ram_mb() { if [ "$TESTING" = 1 ]; then echo "${WM_TEST_PI_RAM_MB:-4096}"; else awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null; fi; }
+pi_model_line() { local m r; m="$(pi_model)"; r="$(pi_ram_mb)"; echo "${m:-unknown model (not a Raspberry Pi?)}${r:+, ${r} MB memory}"; }
+pi_model_warning() {   # prints a warning sentence for a model that is too slow for Klipper + Moonraker + Fluidd + a screen, else nothing
+    local m r; m="$(pi_model)"; r="$(pi_ram_mb)"
+    case "$m" in
+        *"Raspberry Pi Zero"*|*"Raspberry Pi 2 "*|*"Raspberry Pi 3"*|*"Raspberry Pi Model"*|*"Raspberry Pi 1 "*)
+            echo "This is a $m. It runs this printer, but slowly: the install takes much longer, the Fluidd page and the webcam can lag, and a busy print may stutter. A Raspberry Pi 4 or 5 is recommended." ;;
+    esac
+    [ -n "$r" ] && [ "$r" -lt 1800 ] && echo "Only ${r} MB of memory: Klipper, Moonraker, Fluidd and the screen need about 1.5 GB. Expect swapping and slow pages; 2 GB or more is recommended."
+    return 0
+}
+
+# ============================================================================
+# Source of the WonderMaker software
+# ============================================================================
+ask_model() {
+    case "$MODEL" in ultra|ultra-s) ;; *) die_with_fix "unknown model '$MODEL'." "use --model ultra or --model ultra-s." ;; esac
+    [ -n "${MODEL_SET:-}" ] || [ "${WM_ASSUME_YES:-0}" = 1 ] && { print_info "Printer model: $MODEL"; return; }
+    print_header "Which printer do you have?"
+    echo "  1) WonderMaker ZR Ultra"
+    echo "  2) WonderMaker ZR Ultra-S (chamber heater, air filter, door sensors)"
+    local m; read -r -p "$(echo -e "${YELLOW}?${NC} Choose 1 or 2 [2]: ")" m || m=""
+    [ "$m" = 1 ] && MODEL=ultra || MODEL=ultra-s
+    print_success "Model: $MODEL"
+}
+
+choose_source() {
+    print_header "Where is the software?"
+    echo "The Pi runs upstream (vanilla) Klipper and Moonraker, pinned to the tested versions, with WonderMaker's modules and the printer settings. All of it is inside this repository."
+    echo "  Your own calibration (PID, offsets, bed mesh) is not copied by default: use --import-settings BOARD_IP to bring it over (read-only)."
+    [ -n "$SRC_KIND" ] || { SRC_KIND=repo; SRC_ARG=repo; }
+    [ -n "$SRC_ARG" ] || die_with_fix "no value given for the source." "see ./installer.sh --help"
+    STAGE="$HOME_DIR/wm-stage"
+    case "$SRC_KIND" in
+        repo)
+            FROM_FACTORY=1
+            case "$MODEL" in ultra|ultra-s) ;; *) die_with_fix "unknown model '$MODEL'." "use --model ultra or --model ultra-s." ;; esac
+            print_info "Using the files of the $MODEL in this repository (Klipper and Moonraker are GPL; see factory/README.md)."
+            echo "  The repository includes WonderMaker's 5 compiled modules (heaters, load cells, calibration), checked against factory checksums."
+            repair_factory_files
+            run bash "$SCRIPT_DIR/scripts/stage_from_repo.sh" "$MODEL" "$STAGE" $MODULES_DIR || die_with_fix "could not build the factory stage." "see the message above. If files are missing: cd $SCRIPT_DIR && git checkout -- factory   (or download the installer again). A modules folder must hold the unmodified factory *.so files." ;;
+        stage)   # not documented: used by the tests
+            [ -d "$SRC_ARG" ] || die_with_fix "stage folder not found: $SRC_ARG" "give the full path."
+            STAGE="$SRC_ARG" ;;
+    esac
+    if [ "$FROM_FACTORY" = 1 ] && [ "$DRY" != 1 ] && [ "$(cat "$STAGE/modules_ok" 2>/dev/null)" != 1 ]; then
+        warn_later "WonderMaker's 5 compiled modules were NOT installed. Without them Klipper cannot start the heaters, load cells or calibration. Copy them (from your printer) into ~/klipper/klippy/extras/ before ./installer.sh --enable-klipper."
+    fi
+    if [ "$DRY" != 1 ]; then
+        for f in klipper moonraker data; do
+            [ -s "$STAGE/$f.tgz" ] || die_with_fix "$STAGE/$f.tgz is missing or empty." "pull again."
+        done
+        print_success "Software found in $STAGE"
+    fi
+}
+
+# ============================================================================
+# Steps
+# ============================================================================
+step_packages() {
+    print_header "Step 1: system packages"
+    why "nginx serves Fluidd; can-utils and iproute2 talk to the CAN bus; the rest builds the Python environments."
+    [ "$TESTING" = 1 ] && { SUDO apt-get install -y "${APT_PACKAGES[@]}"; return; }
+    SUDO apt-get update -qq
+    heartbeat_start "installing packages"
+    SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y "${APT_PACKAGES[@]}" || { heartbeat_stop; die_with_fix "apt could not install the packages." "check the internet connection, then run the installer again."; }
+    heartbeat_stop
+    print_success "Packages installed"
+}
+
+step_groups() {
+    print_header "Step 2: groups"
+    why "Moonraker needs its own admin group; dialout/plugdev let Klipper open USB and serial devices; tty lets Klipper open the host MCU (the Klipper-Mcu service) when it is used."
+    getent group moonraker-admin >/dev/null 2>&1 || { SUDO groupadd moonraker-admin; record "GROUP moonraker-admin"; }
+    SUDO usermod -aG dialout,plugdev,moonraker-admin,tty "$WM_USER"
+    print_success "Groups ready"
+}
+
+step_python() {
+    print_header "Step 3: Python 3.9"
+    why "WonderMaker's compiled modules (cs1237, hx711, heater_air_core, ...) only load in Python 3.9, so Klipper runs in it. Bookworm has 3.11, so 3.9 is installed next to it (Moonraker uses the system Python)."
+    PY39="$(ls "$HOME_DIR"/.pythons/cpython-3.9*/bin/python3.9 2>/dev/null | head -1)"
+    if [ -n "$PY39" ]; then print_success "Python 3.9 already there: $PY39"; return; fi
+    if [ "$TESTING" = 1 ]; then PY39="$(command -v python3)"; return; fi
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would install uv and Python 3.9 into ~/.pythons${NC}"; PY39="~/.pythons/.../python3.9"; return; }
+    python3 -m venv "$HOME_DIR/uvtool" && "$HOME_DIR/uvtool/bin/pip" install -q uv || die_with_fix "could not install uv." "check the internet connection."
+    UV_PYTHON_INSTALL_DIR="$HOME_DIR/.pythons" "$HOME_DIR/uvtool/bin/uv" python install 3.9 || die_with_fix "could not download Python 3.9." "check the internet connection (github.com must be reachable)."
+    PY39="$(ls "$HOME_DIR"/.pythons/cpython-3.9*/bin/python3.9 | head -1)"
+    record "DIR $HOME_DIR/uvtool"; record "DIR $HOME_DIR/.pythons"
+    print_success "Python 3.9 installed"
+}
+
+step_unpack() {
+    print_header "Step 4: unpack Klipper, Moonraker and the printer settings"
+    why "klipper, moonraker and your printer_data (config) go to the same places as on the old board."
+    local d keep="$BACKUP_ROOT/old-$STAMP"
+    for d in klipper moonraker printer_data fluidd TM_T1; do
+        if [ -e "$HOME_DIR/$d" ]; then
+            run mkdir -p "$keep"; run mv "$HOME_DIR/$d" "$keep/$d"; print_info "Existing ~/$d moved to $keep/"
+        fi
+    done
+    for f in klipper moonraker data; do run tar xzf "$STAGE/$f.tgz" -C "$HOME_DIR"; done
+    run mkdir -p "$HOME_DIR/printer_data/gcodes" "$HOME_DIR/printer_data/logs" "$HOME_DIR/printer_data/comms" "$HOME_DIR/printer_data/systemd"
+    for d in klipper moonraker printer_data fluidd; do record "HOMEDIR $d"; done
+    [ -d "$HOME_DIR/klipper/klippy" ] || [ "$DRY" = 1 ] || die_with_fix "~/klipper/klippy is missing after unpacking." "the stage folder is incomplete: pull again."
+    print_success "Unpacked"
+}
+
+nozzle_script_dst() { echo "$HOME_DIR/printer_data/wm-tools/wm_nozzle.py"; }
+canids_script_dst() { echo "$HOME_DIR/printer_data/wm-tools/wm_canids.py"; }
+estep_script_dst() { echo "$HOME_DIR/printer_data/wm-tools/wm_estep.py"; }
+rpicfg_shell_ok() { [ -f "$HOME_DIR/klipper/klippy/extras/gcode_shell_command.py" ] || [ "${WANT_SHELLCMD:-0}" = 1 ]; }
+rpicfg_list() {   # rpi_nozzle.cfg holds a [gcode_shell_command] section: Klipper would not start without that extension, so it is only used where the extension is or will be installed
+    local f b; for f in "$SCRIPT_DIR"/rpi-cfg/*.cfg; do [ -f "$f" ] || continue; b="$(basename "$f")"; [ "$b" = rpi_nozzle.cfg ] && ! rpicfg_shell_ok && continue; [ "$b" = rpi_base.cfg ] && continue; echo "$b"; done
+    # rpi_base.cfg comes last: step_rpicfg puts each new include line above the first one, so the file handled last is read first by Klipper, and its [wm_virtual_pins] must be read before rpi_calibration.cfg uses a wm_pin
+    [ -f "$SCRIPT_DIR/rpi-cfg/rpi_base.cfg" ] && echo rpi_base.cfg; return 0
+}
+# Names: the config files this installer puts on the Pi used to be called wm_*.cfg (and wm_chamber_light.json,
+# wm-ultra-install.conf). Since 2.6.0 they are rpi_*.cfg. A Pi that has the old names is renamed once (copies of everything
+# that changes go to ~/ultra-backup/config/<date>/rename-<time>/), and the [include ...] lines in the config files follow. Macro names
+# (WM_BED_LEVELING ...) and variable names are not touched.
+RPI_RENAME_MAP=(wm_ace_driver.cfg:rpi_ace_driver.cfg wm_ace.cfg:rpi_ace.cfg wm_calibration.cfg:rpi_calibration.cfg wm_chamber_light.json:rpi_chamber_light.json wm_endless.cfg:rpi_endless.cfg wm_fan_guard.cfg:rpi_fan_guard.cfg wm_mcu_temps.cfg:rpi_mcu_temps.cfg wm_nozzle.cfg:rpi_nozzle.cfg wm_pi.cfg:rpi_pi.cfg wm_print_end.cfg:rpi_print_end.cfg wm_rpi_mcu.cfg:rpi_mcu.cfg wm_stats.cfg:rpi_stats.cfg wm_tool_leds.cfg:rpi_tool_leds.cfg wm-ultra-install.conf:rpi-ultra-install.conf)
+rpi_old_names_present() {
+    local p cd="$HOME_DIR/printer_data/config"
+    for p in "${RPI_RENAME_MAP[@]}"; do [ -e "$cd/${p%%:*}" ] && return 0; done
+    return 1
+}
+rpi_names_migrate() {
+    rpi_old_names_present || return 0
+    local cd="$HOME_DIR/printer_data/config" p old new f n=0 bak="$ULTRA/config/$(date +%F)/rename-$STAMP"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would rename the config files with the old wm_ names to rpi_ (copies first) and change the include lines${NC}"; return 0; fi
+    mkdir -p "$bak" && chmod 700 "$bak" 2>/dev/null
+    for p in "${RPI_RENAME_MAP[@]}"; do
+        old="${p%%:*}"; new="${p##*:}"
+        [ -e "$cd/$old" ] || continue
+        cp -a "$cd/$old" "$bak/$old"
+        if [ -e "$cd/$new" ]; then rm -f "$cd/$old"; print_warning "$old and $new both exist: kept $new (the old one is in $bak)"
+        else mv "$cd/$old" "$cd/$new" && print_success "Renamed $old to $new"; fi
+        n=$((n + 1))
+    done
+    for f in "$cd"/*.cfg; do
+        [ -f "$f" ] || continue
+        for p in "${RPI_RENAME_MAP[@]}"; do
+            old="${p%%:*}"; new="${p##*:}"
+            case "$old" in *.cfg) ;; *) continue ;; esac
+            grep -qE "^[[:space:]]*\[include[[:space:]]+${old//./\\.}[[:space:]]*\]" "$f" || continue
+            [ -e "$bak/$(basename "$f")" ] || cp -a "$f" "$bak/$(basename "$f")"
+            sed -i -E "s/^([[:space:]]*\[include[[:space:]]+)${old//./\\.}([[:space:]]*\])/\1$new\2/" "$f"
+        done
+    done
+    if [ -f "$STATE" ]; then   # the uninstall list names these files
+        for p in "${RPI_RENAME_MAP[@]}"; do old="${p%%:*}"; new="${p##*:}"; sed -i "s#/printer_data/config/${old//./\\.}\$#/printer_data/config/$new#" "$STATE"; done
+    fi
+    print_info "$n config file(s) renamed from wm_ to rpi_. Copies of the old files: $bak"
+    print_info "Klipper reads the new names at its next restart; the screen board uploads rpi_chamber_light.json after its own update."
+}
+# rpi_pi.cfg is written by scripts/wm_rpi_pi.py from the parts this Pi uses (host MCU, Pi temperature, board temperatures, chamber light)
+rpipi_py() { echo "$SCRIPT_DIR/scripts/wm_rpi_pi.py"; }
+rpipi_has() { python3 -I "$(rpipi_py)" has "$HOME_DIR/printer_data/config" "$1" >/dev/null 2>&1; }
+rpipi_include() {   # [include rpi_pi.cfg] above the other includes (a copy of printer.cfg first); nothing when it is there already
+    local cfg="$HOME_DIR/printer_data/config/printer.cfg"
+    [ -f "$HOME_DIR/printer_data/config/rpi_pi.cfg" ] && [ -f "$cfg" ] || return 0
+    rpicfg_included rpi_pi.cfg && return 0
+    cp "$cfg" "$cfg.wm-before-rpipi-$STAMP"
+    if grep -q '^\[include ' "$cfg"; then sed -i "0,/^\[include /s//[include rpi_pi.cfg]\n&/" "$cfg"; else sed -i "1i [include rpi_pi.cfg]" "$cfg"; fi
+    print_success "rpi_pi.cfg is included in printer.cfg (copy of the old one: printer.cfg.wm-before-rpipi-$STAMP)"
+}
+RPI_JOINED_OLD=(rpi_virtual_pins.cfg rpi_safety.cfg rpi_print_end.cfg rpi_tool_leds.cfg rpi_head_sensors.cfg rpi_unload.cfg rpi_zoffset.cfg rpi_homing.cfg rpi_bed_soak.cfg rpi_auto_speed.cfg)
+rpi_join_migrate() {   # 2.10.0 and later: the old separate files (rpi_homing.cfg and rpi_bed_soak.cfg since F-103, rpi_auto_speed.cfg since 2.21.1 in rpi_nozzle.cfg) are in rpi_base.cfg, rpi_calibration.cfg and rpi_nozzle.cfg now; their include lines go, the files are kept in ~/ultra-backup/config/<date>/rpi-join-<time>
+    local cd="$HOME_DIR/printer_data/config" cfg="$HOME_DIR/printer_data/config/printer.cfg" f bk="$ULTRA/config/$(date +%F)/rpi-join-$STAMP" n=0
+    for f in "${RPI_JOINED_OLD[@]}"; do [ -e "$cd/$f" ] || rpicfg_included "$f" || continue; n=$((n+1)); done
+    [ "$n" -gt 0 ] || return 0
+    mkdir -p "$bk"; cp -p "$cfg" "$bk/printer.cfg"
+    for f in "${RPI_JOINED_OLD[@]}"; do
+        rpicfg_included "$f" && cfg_include_remove "$f"
+        [ -e "$cd/$f" ] && mv "$cd/$f" "$bk/$f"
+    done
+    print_info "The Pi's small files are joined: rpi_base.cfg, rpi_calibration.cfg and rpi_nozzle.cfg replace ${RPI_JOINED_OLD[*]}. Their include lines left printer.cfg; the old files (and printer.cfg before) are kept in $bk"
+}
+rpipi_step() {   # rpi_pi.cfg: old separate files become parts, the Pi temperature part, the include line
+    local cd="$HOME_DIR/printer_data/config" ex="$HOME_DIR/klipper/klippy/extras" out rc
+    [ -f "$(rpipi_py)" ] || return 0
+    out="$(python3 -I "$(rpipi_py)" migrate "$cd" "$ULTRA/config/$(date +%F)/rpi-pi-$STAMP" 2>&1)"; rc=$?
+    [ "$rc" = 10 ] && { echo "$out" | sed 's/^/        /'; print_info "rpi_pi.cfg now holds the host MCU, the temperatures and the chamber light (old files kept in ~/ultra-backup/config/<date>/rpi-pi-$STAMP)"; }
+    if [ ! -d "$ex" ] || [ -f "$ex/temperature_host.py" ]; then   # the Pi temperature needs Klipper's temperature_host
+        python3 -I "$(rpipi_py)" set "$cd" pi-temp "$SCRIPT_DIR/config/rpi_pi_temp.cfg" || print_warning "rpi_pi.cfg: the Pi temperature part could not be written"
+    fi
+    rpipi_include
+}
+rpicfg_role() {   # $1 = rpi-cfg file, $2 = name | effect: what the file is, and what goes wrong while it is missing or not included (Doctor texts)
+    case "$1:$2" in
+        rpi_calibration.cfg:name) echo "calibration macros" ;;
+        rpi_calibration.cfg:effect) echo "WM_BED_LEVELING, WM_FIRST_RUN_CAL and the other WM_ calibration macros do not exist" ;;
+        rpi_base.cfg:name) echo "base helpers, homing and bed warp wait" ;;
+        rpi_base.cfg:effect) echo "homing and the bed drop (z_rise), the idle timeout, the bed warp wait, the switch pins, the start-up safety check, the unload menu, the head sensor load queue and live Z per tool do not exist, and the other rpi_ files that use them fail" ;;
+        rpi_nozzle.cfg:name) echo "nozzle type, extruder setup and speed test" ;;
+        rpi_nozzle.cfg:effect) echo "the Nozzle Type and Extruder Setup macros and the X/Y speed test (WM_AUTO_SPEED) do not exist" ;;
+        *:name) echo "Pi config" ;;
+        *) echo "the macros in it do not exist" ;;
+    esac
+}
+rpicfg_included() { grep -qE "^[[:space:]]*\[include[[:space:]]+$1[[:space:]]*\]" "$HOME_DIR/printer_data/config/printer.cfg" 2>/dev/null; }
+step_rpicfg() {   # the Pi's own config files (repo folder rpi-cfg/, not WonderMaker's): copy them and include them in printer.cfg
+    print_header "Step 4c: the Pi's calibration macros (rpi-cfg)"
+    why "WonderMaker's screen has buttons for bed leveling, vibration compensation, nozzle PID, tool offsets and probe calibration. The Pi has no such screen, so rpi-cfg/rpi_calibration.cfg adds the same actions as macros you start from Fluidd (WM_BED_LEVELING, WM_FIRST_RUN_CAL, ...). The same file holds the Z offset tools (WM_FULL_OFFSET_CAL, WM_OFFSETS_Z_HOT, WM_Z_TRIM_MENU); rpi_base.cfg holds the small helpers (switch pins, unload menu WM_UNLOAD_MENU, start-up safety check, head sensor load queue, live Z), rpi_homing.cfg the homing and idle timeout, rpi_bed_soak.cfg the bed warp wait before the bed mesh (switch Bed_Warp_Stabilisation, on by default) and its measurement, and rpi_pi.cfg (written here) the Pi side: host MCU, temperatures, chamber light. They are the Pi's own files, not WonderMaker's: a WonderMaker update never changes them."
+    local cd="$HOME_DIR/printer_data/config" cfg="$HOME_DIR/printer_data/config/printer.cfg" f
+    [ -n "$(rpicfg_list)" ] || { print_warning "the rpi-cfg folder is missing from this repository: calibration macros not installed"; return 0; }
+    if [ "$DRY" = 1 ] || [ ! -f "$cfg" ]; then echo -e "  ${DIM}would copy rpi-cfg/*.cfg into the config folder and add an [include] line for each to printer.cfg${NC}"; return 0; fi
+    rpi_join_migrate
+    # rpi_base.cfg ([wm_virtual_pins]) needs the driver wm_virtual_pins.py in Klipper's extras, or Klipper would not start: an update copies it here, before the include line is written
+    local vp="$SCRIPT_DIR/factory/$(model_now)/klipper/klippy/extras/wm_virtual_pins.py" ex="$HOME_DIR/klipper/klippy/extras"
+    if [ -f "$vp" ] && [ -d "$ex" ] && ! cmp -s "$vp" "$ex/wm_virtual_pins.py"; then cp "$vp" "$ex/wm_virtual_pins.py" && print_info "driver wm_virtual_pins.py copied into Klipper's extras (the switch Nozzle Heat Growth needs it)"; fi
+    # rpi_calibration.cfg ([wm_tool_touch], tool setter position helper, 2.14.0) needs the driver wm_tool_touch.py: same reason
+    local tt="$SCRIPT_DIR/factory/$(model_now)/klipper/klippy/extras/wm_tool_touch.py"
+    if [ -f "$tt" ] && [ -d "$ex" ] && ! cmp -s "$tt" "$ex/wm_tool_touch.py"; then cp "$tt" "$ex/wm_tool_touch.py" && print_info "driver wm_tool_touch.py copied into Klipper's extras (the tool setter position helper needs it)"; fi
+    # rpi_base.cfg (_WM_START_PURGE) reads the print info of the file (used tools and temperatures) from the driver wm_print_info.py, loaded by [wm_print_info] in printer.cfg: copy it first, so a merged printer.cfg never makes Klipper fail
+    local pi="$SCRIPT_DIR/factory/$(model_now)/klipper/klippy/extras/wm_print_info.py"
+    if [ -f "$pi" ] && [ -d "$ex" ] && ! cmp -s "$pi" "$ex/wm_print_info.py"; then cp "$pi" "$ex/wm_print_info.py" && print_info "driver wm_print_info.py copied into Klipper's extras (the print start purge reads the slicer's tool list with it)"; fi
+    # rpi_nozzle.cfg (the speed test part, joined from rpi_auto_speed.cfg in 2.21.1) needs the speed test module (klipper_auto_speed by Anonoei, MIT, with this repository's changes): same reason
+    local asd="$SCRIPT_DIR/factory/$(model_now)/klipper/klippy/extras" af
+    if [ -d "$ex" ] && [ -f "$asd/auto_speed.py" ]; then
+        for af in auto_speed.py autospeed/__init__.py autospeed/funcs.py autospeed/main.py autospeed/move.py autospeed/wrappers.py autospeed/LICENSE; do
+            [ -f "$asd/$af" ] && ! cmp -s "$asd/$af" "$ex/$af" && mkdir -p "$(dirname "$ex/$af")" && cp "$asd/$af" "$ex/$af" && print_info "speed test module: $af copied into Klipper's extras"
+        done
+    fi
+    for f in $(rpicfg_list); do
+        if { [ "$f" = rpi_base.cfg ] || [ "$f" = rpi_calibration.cfg ]; } && [ -d "$ex" ] && [ ! -f "$ex/wm_virtual_pins.py" ]; then print_warning "$f not installed: the driver wm_virtual_pins.py is missing from Klipper's extras"; continue; fi
+        if [ "$f" = rpi_calibration.cfg ] && [ -d "$ex" ] && [ ! -f "$ex/wm_tool_touch.py" ]; then print_warning "$f not installed: the driver wm_tool_touch.py is missing from Klipper's extras"; continue; fi
+        if [ "$f" = rpi_nozzle.cfg ] && [ -d "$ex" ] && [ ! -f "$ex/auto_speed.py" ]; then print_warning "$f not installed: the speed test module auto_speed.py is missing from Klipper's extras"; continue; fi
+        if [ -f "$cd/$f" ] && ! cmp -s "$SCRIPT_DIR/rpi-cfg/$f" "$cd/$f"; then   # you may have edited it: keep a copy before it is replaced
+            cp "$cd/$f" "$cd/$f.wm-before-rpicfg-$STAMP"; print_info "$f was different: your old copy is kept as $f.wm-before-rpicfg-$STAMP"
+        fi
+        cp "$SCRIPT_DIR/rpi-cfg/$f" "$cd/$f"
+        if [ "$f" = rpi_nozzle.cfg ]; then   # the Save button of the speed test writes max_accel and max_velocity into printer.cfg with this script
+            mkdir -p "$HOME_DIR/printer_data/wm-tools" && cp "$SCRIPT_DIR/scripts/wm_speed_limits.py" "$HOME_DIR/printer_data/wm-tools/wm_speed_limits.py" && chmod +x "$HOME_DIR/printer_data/wm-tools/wm_speed_limits.py"
+        fi
+        if [ "$f" = rpi_nozzle.cfg ]; then   # its shell command runs this script; it is kept outside the config folder, which WonderMaker updates merge
+            mkdir -p "$(dirname "$(nozzle_script_dst)")" && cp "$SCRIPT_DIR/scripts/wm_nozzle.py" "$(nozzle_script_dst)" && chmod +x "$(nozzle_script_dst)"
+            cp "$SCRIPT_DIR/scripts/wm_canids.py" "$(canids_script_dst)" && chmod +x "$(canids_script_dst)"   # behind WM_EXTRUDER_SETUP (Set Up)
+            cp "$SCRIPT_DIR/scripts/wm_estep.py" "$(estep_script_dst)" && chmod +x "$(estep_script_dst)"   # behind WM_ESTEP_CAL (E-step calibration)
+        fi
+        if rpicfg_included "$f"; then print_success "$f is installed (printer.cfg already includes it)"
+        else
+            cp "$cfg" "$cfg.wm-before-rpicfg-$STAMP"
+            if [ "$f" != rpi_base.cfg ] && grep -q '^\[include rpi_base.cfg\]' "$cfg"; then
+                sed -i "0,/^\[include rpi_base.cfg\]/s//&\n[include $f]/" "$cfg"   # below rpi_base.cfg: its [wm_virtual_pins] must be read before any wm_pin
+            elif grep -q '^\[include ' "$cfg"; then sed -i "0,/^\[include /s//[include $f]\n&/" "$cfg"; else sed -i "1i [include $f]" "$cfg"; fi
+            print_success "$f is installed and included in printer.cfg (copy of the old one: printer.cfg.wm-before-rpicfg-$STAMP)"
+        fi
+    done
+    rpipi_step
+}
+moonraker_py() { echo "$SCRIPT_DIR/scripts/wm_moonraker_conf.py"; }
+light_py() { echo "$SCRIPT_DIR/scripts/wm_light_conf.py"; }
+light_url() { [ -f "$(light_py)" ] && python3 -I "$(light_py)" url "$HOME_DIR/printer_data/config/rpi_chamber_light.json" 2>/dev/null; }
+step_light_watch() {   # the screen board announces its chamber light (rpi_chamber_light.json) some minutes after an install, when its own service has started: wm-light.path sees the file and runs ./installer.sh --light --yes, so nobody has to remember it
+    [ -f "$SCRIPT_DIR/installer.sh" ] || return 0
+    local user cfg pth svc; user="$(id -un)"; cfg="$HOME_DIR/printer_data/config/rpi_chamber_light.json"; pth="$(mktemp)"; svc="$(mktemp)"
+    printf '[Unit]\nDescription=Set up the chamber light when the screen board announces it\n\n[Path]\nPathChanged=%s\nUnit=wm-light.service\n\n[Install]\nWantedBy=multi-user.target\n' "$cfg" > "$pth"
+    printf '[Unit]\nDescription=WM Ultra installer: chamber light for the screen board (log: ~/wm-light.log)\n\n[Service]\nType=oneshot\nUser=%s\nEnvironment=HOME=%s\nWorkingDirectory=%s\nExecStart=/bin/bash -c "./installer.sh --light --yes >> %s/wm-light.log 2>&1"\n' "$user" "$HOME_DIR" "$SCRIPT_DIR" "$HOME_DIR" > "$svc"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would install wm-light.path (sets up the chamber light by itself when the screen board announces it)${NC}"; rm -f "$pth" "$svc"; return 0; fi
+    if [ "$TESTING" = 1 ]; then mkdir -p "$HOME_DIR/.wm-units"; cp "$pth" "$HOME_DIR/.wm-units/wm-light.path"; cp "$svc" "$HOME_DIR/.wm-units/wm-light.service"; fi
+    if ! cmp -s "$pth" /etc/systemd/system/wm-light.path 2>/dev/null || ! cmp -s "$svc" /etc/systemd/system/wm-light.service 2>/dev/null || [ "$TESTING" = 1 ]; then
+        SUDO install -m 644 "$pth" /etc/systemd/system/wm-light.path
+        SUDO install -m 644 "$svc" /etc/systemd/system/wm-light.service
+        record "FILE /etc/systemd/system/wm-light.path"; record "FILE /etc/systemd/system/wm-light.service"
+        SUDO systemctl daemon-reload
+    fi
+    SUDO systemctl enable --now wm-light.path
+    rm -f "$pth" "$svc"
+}
+step_light() {   # ./installer.sh --light, and in every install and update: the chamber light as a Moonraker power device
+    print_header "Chamber light"
+    step_light_watch
+    why "The chamber light hangs on the screen board. As the Moonraker power device chamber_light it is switched by the Fluidd Toolheads card, by the Light buttons on the touchscreen and by the macro WM_CHAMBER_LIGHT, and all three always show the same state. A print turns it on at its start. The board tells the Pi its address by itself (rpi_chamber_light.json), so this step only works once a screen board is installed and has started."
+    local cd="$HOME_DIR/printer_data/config" conf="$HOME_DIR/printer_data/config/moonraker.conf" cfg="$HOME_DIR/printer_data/config/printer.cfg" url rc
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would add [power chamber_light] to moonraker.conf and WM_CHAMBER_LIGHT (rpi_pi.cfg) when a screen board has announced its light service${NC}"; return 0; fi
+    url="$(light_url)"
+    if [ -z "$url" ]; then print_info "The screen board has not announced its chamber light yet (rpi_chamber_light.json is not in the config folder). Nothing to do: the Pi sets the light up by itself when the board announces it (wm-light.path; log ~/wm-light.log)."; return 0; fi
+    [ -f "$conf" ] && [ -f "$cfg" ] && [ -f "$SCRIPT_DIR/config/rpi_light.cfg" ] || { print_info "moonraker.conf, printer.cfg or config/rpi_light.cfg is missing: chamber light not set up"; return 0; }
+    python3 -I "$(light_py)" conf "$conf" "$url"; rc=$?
+    case "$rc" in
+        10) cp -p "$conf" "$conf.wm-before-light-$STAMP"
+            python3 -I "$(light_py)" conf "$conf" "$url" --write; print_success "moonraker.conf: [power chamber_light] set to $url (copy: moonraker.conf.wm-before-light-$STAMP)"; MOONRAKER_CHANGED=1 ;;
+        12) print_warning "moonraker.conf has a [power chamber_light] section of your own: left as it is"; ;;
+        0)  print_success "moonraker.conf already has the chamber light ($url)" ;;
+        *)  print_warning "could not check moonraker.conf for the chamber light"; return 0 ;;
+    esac
+    # WM_CHAMBER_LIGHT is the part "light" of rpi_pi.cfg (until 2.9.0 the file rpi_light.cfg, which the migration moves in)
+    if [ -f "$(rpipi_py)" ]; then
+        python3 -I "$(rpipi_py)" migrate "$cd" "$ULTRA/config/$(date +%F)/rpi-pi-$STAMP" | sed 's/^/        /'
+        if rpipi_has light && rpicfg_included rpi_pi.cfg; then python3 -I "$(rpipi_py)" set "$cd" light "$SCRIPT_DIR/config/rpi_light.cfg"; print_success "WM_CHAMBER_LIGHT is installed (rpi_pi.cfg)"
+        else python3 -I "$(rpipi_py)" set "$cd" light "$SCRIPT_DIR/config/rpi_light.cfg" && rpipi_include && print_success "WM_CHAMBER_LIGHT is installed (rpi_pi.cfg, part light)"; fi
+    fi
+    board_offer_add
+}
+do_light() {   # ./installer.sh --light
+    [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] || die_with_fix "there is no printer.cfg on this Pi yet." "install first (menu 1), then run this again."
+    guard_not_printing
+    local cd="$HOME_DIR/printer_data/config" before after
+    light_sum() { cat "$cd/printer.cfg" "$cd/rpi_pi.cfg" "$cd/rpi_light.cfg" 2>/dev/null | md5sum; }
+    before="$(light_sum)"
+    step_light
+    [ "$DRY" = 1 ] && return 0
+    [ "$MOONRAKER_CHANGED" = 1 ] && [ "$TESTING" != 1 ] && SUDO systemctl restart moonraker
+    after="$(light_sum)"
+    # F-155: this runs by itself (wm-light.path) whenever the screen board uploads its light file, also in the middle of a load or a print. It used to restart Klipper every time, which shut down a tool MCU with a hot heater (T1, 22:58). Klipper restarts only when the light macro itself changed, and never while it is busy.
+    if [ "$before" = "$after" ]; then print_info "The Klipper config did not change, so Klipper was not restarted."; return 0; fi
+    local why_busy; why_busy="$(klipper_busy)"
+    if [ -n "$why_busy" ]; then
+        print_warning "WM_CHAMBER_LIGHT was written, but Klipper was NOT restarted because it is busy ($why_busy). The light macro starts with the next restart of Klipper."
+        return 0
+    fi
+    restart_klipper_after
+}
+klipper_busy() {   # prints why Klipper must not be restarted now (a macro runs, a heater is on, a print is active); nothing when it is idle
+    [ "$TESTING" = 1 ] && { echo "${WM_TEST_BUSY:-}"; return; }
+    api_get '/printer/objects/query?idle_timeout&print_stats&heaters' | python3 -c '
+import sys, json, urllib.request
+try:
+    st = json.load(sys.stdin)["result"]["status"]
+except Exception:
+    sys.exit(0)
+if st["idle_timeout"]["state"] == "Printing": print("a macro or a print is running"); sys.exit(0)
+if st["print_stats"]["state"] in ("printing", "paused"): print("a print is active"); sys.exit(0)
+names = st.get("heaters", {}).get("available_heaters", [])
+if names:
+    q = "&".join(n.replace(" ", "%20") for n in names)
+    try:
+        r = json.load(urllib.request.urlopen("http://127.0.0.1:7125/printer/objects/query?" + q, timeout=5))["result"]["status"]
+        hot = [n for n in names if (r.get(n) or {}).get("target", 0) > 0]
+        if hot: print("heater on: " + ", ".join(hot))
+    except Exception:
+        pass
+' 2>/dev/null
+}
+macro_patches_py() { echo "$SCRIPT_DIR/scripts/wm_macro_patches.py"; }
+step_macro_patches() {   # --update: the fixes of this version inside WonderMaker's macro files (macros.cfg, change_macros.cfg, ...) on a Pi that is already installed
+    print_header "Fixes inside WonderMaker's macro files"
+    why "A new install gets the macro files of this repository. An update never replaced them, because they may hold your own edits, so fixes inside macros.cfg, change_macros.cfg, offset_calibrate.cfg and extruder0-3.cfg stayed behind. This step makes each fix as a small text change: where the old lines are still there they are replaced, where the fix is already in nothing happens, and lines you changed yourself are left alone and listed. A copy of every changed file is kept."
+    local cd="$HOME_DIR/printer_data/config" out rc
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would apply this version's fixes to macros.cfg, change_macros.cfg, offset_calibrate.cfg and extruder0-3.cfg${NC}"; return 0; fi
+    [ -f "$(macro_patches_py)" ] && [ -f "$SCRIPT_DIR/scripts/wm_macro_patches.json" ] && [ -d "$cd" ] || { print_info "nothing to compare"; return 0; }
+    out="$(python3 -I "$(macro_patches_py)" "$cd" --write --stamp "$STAMP" 2>&1)"; rc=$?
+    [ -n "$out" ] && echo "$out" | sed 's/^/        /'
+    case "$rc" in
+        0)  print_success "WonderMaker's macro files already have every fix of this version" ;;
+        10) print_success "WonderMaker's macro files updated (copies: <file>.wm-before-macro-patches-$STAMP)" ;;
+        11) warn_later "Some fixes were not made in WonderMaker's macro files because those lines are different on this Pi (listed in the update output). Compare with factory/$(model_now)/config in $REPO_DIR." ;;
+        *)  print_warning "could not check WonderMaker's macro files" ;;
+    esac
+}
+step_moonraker_tune() {   # moonraker.conf sections (file_manager, machine, ...), no timelapse paths that only repeat the defaults, and the filament_type fix in Moonraker's metadata.py (Fluidd's Jobs page stays on "Loading items" without it)
+    print_header "Step 4f: Moonraker settings"
+    why "Adds the [file_manager], [machine], [database] and [secrets] sections Fluidd needs, and removes the timelapse paths that only repeat Moonraker's defaults. Your own values are never changed; a copy of each changed file is kept."
+    local conf="$HOME_DIR/printer_data/config/moonraker.conf" rc out
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would add the missing Moonraker sections to moonraker.conf${NC}"; return 0; fi
+    [ -f "$(moonraker_py)" ] || { print_warning "scripts/wm_moonraker_conf.py is missing from this repository: Moonraker settings not checked"; return 0; }
+    if [ -f "$conf" ]; then
+        out="$(python3 -I "$(moonraker_py)" conf "$conf")"; rc=$?
+        if [ "$rc" = 10 ]; then
+            cp -p "$conf" "$conf.wm-before-moonraker-tune-$STAMP"
+            python3 -I "$(moonraker_py)" conf "$conf" --write >/dev/null && { echo "$out" | sed 's/^/        /'; print_success "moonraker.conf updated (copy: moonraker.conf.wm-before-moonraker-tune-$STAMP)"; MOONRAKER_CHANGED=1; }
+        else print_success "moonraker.conf already has these settings"; fi
+    fi
+}
+do_rpicfg() {   # ./installer.sh --rpi-cfg
+    print_header "The Pi's own config files (rpi-cfg)"
+    [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] || die_with_fix "there is no printer.cfg on this Pi yet." "install first (menu 1), then run this again."
+    guard_not_printing
+    rpi_names_migrate
+    # rpi_nozzle.cfg needs Klipper's gcode shell command extension: put it in first (an install or update does that in its own step)
+    [ -f "$HOME_DIR/klipper/klippy/extras/gcode_shell_command.py" ] || [ ! -d "$HOME_DIR/klipper/klippy/extras" ] || [ "$WANT_SHELLCMD" != 1 ] || step_shellcmd
+    step_rpicfg
+    step_light
+    step_moonraker_tune
+    [ "$DRY" = 1 ] || { [ "$MOONRAKER_CHANGED" = 1 ] && [ "$TESTING" != 1 ] && SUDO systemctl restart moonraker; restart_klipper_after; print_info "In Fluidd run WM_CAL_HELP to list the calibration macros."; }
+}
+
+cfgmerge_py() { echo "$SCRIPT_DIR/scripts/wm_cfgmerge.py"; }
+cfgmerge_base_dir() { echo "$HOME_DIR/printer_data/wm-baseline"; }
+cfgmerge_new_dir() { echo "$SCRIPT_DIR/factory/$(model_now)/config"; }
+cfgmerge_record() {   # the factory printer.cfg and saved_variables.cfg of this repository become the starting point for the next merge
+    local b n f; b="$(cfgmerge_base_dir)"; n="$(cfgmerge_new_dir)"; mkdir -p "$b" || return 1
+    for f in printer.cfg saved_variables.cfg; do [ -f "$n/$f" ] && cp "$n/$f" "$b/$f"; done; return 0
+}
+step_cfgmerge() {   # WonderMaker's new settings (a new version of the factory files in this repository) into the Pi's printer.cfg, 3-way: old factory, new factory, your file
+    print_header "Step 4e: WonderMaker's changes to printer.cfg"
+    why "When this repository gets a newer WonderMaker version, its printer.cfg may have new settings. This compares three files: the factory printer.cfg the Pi was set up from, the new one, and yours. WonderMaker's changes are added; your own lines, includes, sections and the SAVE_CONFIG block (PID, input shaper, bed mesh) stay. A setting that you and WonderMaker changed differently is asked one by one."
+    local cd="$HOME_DIR/printer_data/config" live="$HOME_DIR/printer_data/config/printer.cfg" b n code out
+    b="$(cfgmerge_base_dir)"; n="$(cfgmerge_new_dir)"
+    if [ "$DRY" = 1 ] || [ ! -f "$live" ]; then echo -e "  ${DIM}would compare WonderMaker's factory printer.cfg in this repository with the one the Pi was set up from, and merge the difference into printer.cfg${NC}"; return 0; fi
+    [ -f "$(cfgmerge_py)" ] && [ -f "$n/printer.cfg" ] || { print_info "no factory printer.cfg for the $(model_now) in this repository: nothing to compare"; return 0; }
+    if [ ! -f "$b/printer.cfg" ]; then
+        cfgmerge_record && print_success "Recorded this repository's factory printer.cfg as the starting point. The next WonderMaker version will be merged against it."; return 0
+    fi
+    out="$(python3 "$(cfgmerge_py)" plan "$b/printer.cfg" "$n/printer.cfg" "$live" 2>&1)"; code=$?
+    if [ -f "$n/saved_variables.cfg" ] && [ -f "$b/saved_variables.cfg" ] && [ -f "$cd/saved_variables.cfg" ] && ! cmp -s "$n/saved_variables.cfg" "$b/saved_variables.cfg"; then
+        python3 "$(cfgmerge_py)" addkeys "$n/saved_variables.cfg" "$cd/saved_variables.cfg" --stamp "$STAMP" 2>&1 | sed 's/^/  /'
+    fi
+    case "$code" in
+        0) print_success "printer.cfg already has everything from this WonderMaker version"; cfgmerge_record; return 0 ;;
+        10|11)
+            echo "$out" | sed 's/^/  /'
+            if ask_yn "  Merge these WonderMaker changes into your printer.cfg (a copy of yours is kept)?" y; then
+                local mode=""; { [ "${WM_ASSUME_YES:-0}" = 1 ] || [ ! -t 0 ]; } && mode="--all mine"
+                if python3 "$(cfgmerge_py)" apply "$b/printer.cfg" "$n/printer.cfg" "$live" $mode --stamp "$STAMP" | tail -n 2 | sed 's/^/  /'; then
+                    print_success "printer.cfg merged (copy of the old one: printer.cfg.wm-before-cfgmerge-$STAMP)"; cfgmerge_record
+                else print_warning "the merge did not work: printer.cfg is unchanged"; return 1; fi
+            else print_info "Left as it is. Run ./installer.sh --cfg-merge when you want it."; fi ;;
+        *) print_warning "could not compare the printer.cfg files: $out"; return 1 ;;
+    esac
+}
+devbox_on() { grep -qs 'printer_data/devbox' "$HOME_DIR/printer_data/systemd/klipper.env"; }   # tools/devbox/devbox.py on: Klipper runs on a private copy with fake boards
+devbox_notice() { devbox_on && print_warning "Dev box mode is ON (tools/devbox/devbox.py): Klipper runs with simulated boards on a private copy of the config. Results saved by Klipper now (PID, bed mesh, offsets) go to that copy, not to your real printer.cfg. Switch it off with: python3 tools/devbox/devbox.py off"; return 0; }
+do_cfgmerge() {   # ./installer.sh --cfg-merge
+    print_header "WonderMaker's changes to printer.cfg"
+    devbox_notice
+    [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] || die_with_fix "there is no printer.cfg on this Pi yet." "install first (menu 1), then run this again."
+    guard_not_printing
+    local before; before="$(cksum < "$HOME_DIR/printer_data/config/printer.cfg")"
+    step_cfgmerge
+    step_pidcfg
+    [ "$DRY" = 1 ] || { [ "$before" = "$(cksum < "$HOME_DIR/printer_data/config/printer.cfg")" ] || restart_klipper_after; }
+}
+importset_py() { echo "$SCRIPT_DIR/scripts/wm_import_settings.py"; }
+do_import_settings() {   # ./installer.sh --import-settings IP : calibration from the old board, read-only (two files are read with cat)
+    print_header "Import your settings from the old board"
+    why "Your PID, input shaper, bed mesh, probe offset and tool offsets were saved on the old board. This copies them to the Pi. The old board is only read (two files with cat), nothing is written to it."
+    local cd="$HOME_DIR/printer_data/config" tmp host="$IMPORT_HOST" u="${WM_BOARD_USER:-$WM_USER}" a=()
+    [ -f "$cd/printer.cfg" ] || die_with_fix "there is no printer.cfg on this Pi yet." "install first, then run this again."
+    [ -f "$(importset_py)" ] || die_with_fix "scripts/wm_import_settings.py is missing." "download the installer folder again."
+    [ -n "$host" ] || read -r -p "  Old board IP address: " host
+    [ -n "$host" ] || die_with_fix "no address given." "./installer.sh --import-settings 192.168.x.x"
+    guard_not_printing
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+    if [ -n "${WM_IMPORT_FROM_DIR:-}" ]; then   # tests: files already local
+        cp "$WM_IMPORT_FROM_DIR/printer.cfg" "$tmp/old-printer.cfg"; cp "$WM_IMPORT_FROM_DIR/saved_variables.cfg" "$tmp/old-vars.cfg" 2>/dev/null
+    else
+        print_info "Reading printer.cfg and saved_variables.cfg from $u@$host (read-only; the default password is TM88888)."
+        ssh -o ConnectTimeout=10 "$u@$host" 'cat ~/printer_data/config/printer.cfg' > "$tmp/old-printer.cfg" || die_with_fix "could not read the old board." "check the IP, that it is on, and the password."
+        ssh -o ConnectTimeout=10 "$u@$host" 'cat ~/printer_data/config/saved_variables.cfg' > "$tmp/old-vars.cfg" 2>/dev/null || : > "$tmp/old-vars.cfg"
+    fi
+    [ -s "$tmp/old-printer.cfg" ] || die_with_fix "the old printer.cfg is empty." "check the address."
+    a=(--old-printer "$tmp/old-printer.cfg" --printer "$cd/printer.cfg")
+    [ -s "$tmp/old-vars.cfg" ] && [ -f "$cd/saved_variables.cfg" ] && a+=(--old-vars "$tmp/old-vars.cfg" --vars "$cd/saved_variables.cfg")
+    python3 "$(importset_py)" plan "${a[@]}" || die_with_fix "could not read the settings." "see the message above."
+    print_warning "These values belong to the klipper/firmware version of the old board. If this Pi runs another WonderMaker version, check the first print."
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}dry run: nothing written${NC}"; return 0; }
+    ask_yn "  Copy these settings into this Pi (a copy of each changed file is kept)?" n || { print_info "Nothing changed."; return 0; }
+    python3 "$(importset_py)" apply "${a[@]}" --stamp "$STAMP" || die_with_fix "import failed." "your files are unchanged or can be restored from *.wm-before-import-$STAMP."
+    restart_klipper_after
+    print_success "Settings imported."
+}
+pidcfg_py() { echo "$SCRIPT_DIR/scripts/wm_pidcfg.py"; }
+pidcfg_check() { python3 "$(pidcfg_py)" check "$HOME_DIR/printer_data/config" 2>&1; }   # exit 0 = fine, 1 = problems (listed), 2 = no printer.cfg
+step_pidcfg() {   # the PID values of the hotends and the bed must live in printer.cfg itself, or Klipper cannot save a PID result (the chamber heater is left alone: see chamber_test/README.md)
+    print_header "Step 4d: PID settings where Klipper can save them"
+    why "After a PID tuning Klipper saves the result with SAVE_CONFIG. It refuses when an included file already sets control or pid_Kp/Ki/Kd for a heater it has to save, and a hotend without control: pid has nothing to tune. This moves such values into printer.cfg and gives every hotend control: pid. Your values are kept; the changed files are saved as <file>.wm-before-pidcfg-$STAMP."
+    local cd="$HOME_DIR/printer_data/config" out rc
+    if [ "$DRY" = 1 ] || [ ! -f "$cd/printer.cfg" ]; then echo -e "  ${DIM}would check the PID settings in printer.cfg and the files it includes, and move them into printer.cfg when needed${NC}"; return 0; fi
+    [ -f "$(pidcfg_py)" ] || { print_warning "scripts/wm_pidcfg.py is missing from this repository: PID settings not checked"; return 0; }
+    out="$(pidcfg_check)"; rc=$?
+    if [ "$rc" = 0 ]; then print_success "PID settings are where SAVE_CONFIG can store them"; return 0; fi
+    echo "$out" | sed 's/^/        /'
+    out="$(python3 "$(pidcfg_py)" fix "$cd" "$STAMP" 2>&1)"; rc=$?
+    echo "$out" | grep '^FIXED' | while read -r l; do print_success "${l#FIXED }"; done
+    echo "$out" | grep -E '^(HOTEND|CONFLICT)' | while read -r l; do print_warning "$l"; done
+    [ "$rc" = 0 ] || return 1
+}
+do_pidcfg() {   # ./installer.sh --pid-cfg
+    print_header "PID settings (hotends, bed)"
+    devbox_notice
+    [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] || die_with_fix "there is no printer.cfg on this Pi yet." "install first (menu 1), then run this again."
+    guard_not_printing
+    local before; before="$(pidcfg_check)"
+    step_pidcfg
+    [ "$DRY" = 1 ] || { [ "$before" = OK ] || restart_klipper_after; }
+}
+
+step_model() {
+    print_header "Step 4b: set up for the $MODEL"
+    why "The Ultra-S has a chamber heater, air filter fan and door sensors (zru-s.cfg). The Ultra does not. printer.cfg must include it only on the Ultra-S."
+    local cfg="$HOME_DIR/printer_data/config/printer.cfg"
+    if [ "$DRY" = 1 ] || [ ! -f "$cfg" ]; then echo -e "  ${DIM}would set the zru-s.cfg include for the $MODEL${NC}"; return 0; fi
+    local want; [ "$MODEL" = ultra-s ] && want='[include zru-s.cfg]' || want='# [include zru-s.cfg]'
+    if grep -qxF "$want" "$cfg"; then print_success "printer.cfg already matches the $MODEL"; else
+        cp "$cfg" "$cfg.wm-model-bak"
+        if grep -qE '^[#[:space:]]*\[include zru-s.cfg\]' "$cfg"; then sed -i "s/^[#[:space:]]*\[include zru-s.cfg\]/$want/" "$cfg"
+        elif [ "$MODEL" = ultra-s ]; then cfg_include_last zru-s.cfg; fi   # above the SAVE_CONFIG block, never under it
+        print_success "printer.cfg set for the $MODEL (copy of the old one: printer.cfg.wm-model-bak)"
+    fi
+    echo "$MODEL" > "$HOME_DIR/printer_data/wm-model"
+    fill_blank_uuids
+}
+
+step_venvs() {
+    print_header "Step 5: Python environments"
+    why "Klipper and Moonraker each get their own environment with the exact package versions of the tested Pi (config/*-requirements.txt). Klipper runs in Python 3.9 (WonderMaker's modules need it), Moonraker in the system Python."
+    [ "$TESTING" = 1 ] && { echo "[test] venvs skipped"; return; }
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would create ~/klippy-env (Python 3.9) and ~/moonraker-env (system Python)${NC}"; return; }
+    "$PY39" -m venv "$HOME_DIR/klippy-env" || die_with_fix "could not create klippy-env." "run again."
+    "$HOME_DIR/klippy-env/bin/pip" install -q -U pip wheel "setuptools<66" || die_with_fix "pip failed." "check the internet connection."
+    heartbeat_start "installing Klipper's Python packages (several minutes on a Pi)"
+    "$HOME_DIR/klippy-env/bin/pip" install -q -r "$SCRIPT_DIR/config/klippy-requirements.txt" || { heartbeat_stop; die_with_fix "Klipper's packages did not install." "see the message above."; }
+    heartbeat_stop
+    python3 -m venv "$HOME_DIR/moonraker-env" || die_with_fix "could not create moonraker-env." "run again."
+    "$HOME_DIR/moonraker-env/bin/pip" install -q -U pip wheel setuptools
+    heartbeat_start "installing Moonraker's Python packages"
+    "$HOME_DIR/moonraker-env/bin/pip" install -q -r "$SCRIPT_DIR/config/moonraker-requirements.txt" || { heartbeat_stop; die_with_fix "Moonraker's packages did not install." "see the message above."; }
+    heartbeat_stop
+    record "HOMEDIR klippy-env"; record "HOMEDIR moonraker-env"
+    print_success "Environments ready"
+}
+
+# Klipper loads these as "extras.<name>" with the klippy folder on the path (they use "from . import ..." and "import pins").
+# Importing them from inside the extras folder fails for a good module too, so test them the way Klipper does.
+module_imports() { (cd "$HOME_DIR/klipper/klippy" && "$HOME_DIR/klippy-env/bin/python" -c "import sys; sys.path.insert(0, '.'); import extras.$1" 2>/dev/null); }
+
+step_modules() {
+    print_header "Step 6: WonderMaker's compiled modules"
+    why "These binary modules decide whether the heaters, load cells and tool calibration work. They must import on this Pi."
+    [ "$TESTING" = 1 ] || [ "$DRY" = 1 ] && { echo "[skipped in test/dry-run]"; return; }
+    local m bad=0
+    for m in "${COMPILED_MODULES[@]}"; do
+        if module_imports "$m"; then print_success "$m"; else print_warning "$m does not import"; bad=1; fi
+    done
+    [ "$bad" = 0 ] || warn_later "Some WonderMaker modules did not import. Klipper may stop with an error about them. Check: cd ~/klipper/klippy && ~/klippy-env/bin/python -c 'import sys; sys.path.insert(0, \".\"); import extras.<module>'"
+}
+
+step_svguard() {   # one good copy of saved_variables.cfg: a power cut can leave it empty (Klipper wipes the file before it writes it), and Klipper then starts with no offsets or calibration
+    local sd="$HOME_DIR/printer_data/scripts" old=/etc/systemd/system/klipper.service.d/wm-sv-guard.conf
+    [ -f "$SCRIPT_DIR/scripts/wm_sv_guard.sh" ] || { print_warning "scripts/wm_sv_guard.sh is missing from this repository: the saved_variables safeguard is not installed"; return 0; }
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would install wm_sv_guard.sh and the wm-sv-guard timer (one good copy of saved_variables.cfg, checked every 10 minutes)${NC}"; return 0; fi
+    mkdir -p "$sd"; install -m 755 "$SCRIPT_DIR/scripts/wm_sv_guard.sh" "$sd/wm_sv_guard.sh"
+    SUDO install -m 644 "$SCRIPT_DIR/config/wm-sv-guard.service" /etc/systemd/system/wm-sv-guard.service
+    SUDO install -m 644 "$SCRIPT_DIR/config/wm-sv-guard.timer"   /etc/systemd/system/wm-sv-guard.timer
+    record "FILE /etc/systemd/system/wm-sv-guard.service"; record "FILE /etc/systemd/system/wm-sv-guard.timer"
+    [ -f "$old" ] && SUDO rm -f "$old"   # a hand-made drop-in with the same two lines the service file has now
+    SUDO systemctl daemon-reload
+    SUDO systemctl enable wm-sv-guard.timer
+    SUDO systemctl start wm-sv-guard.timer
+    [ "$TESTING" = 1 ] || "$sd/wm_sv_guard.sh" backup
+}
+step_services_files() {
+    SUDO install -m 644 "$SCRIPT_DIR/config/moonraker.service" /etc/systemd/system/moonraker.service
+    SUDO install -m 644 "$SCRIPT_DIR/config/klipper.service"   /etc/systemd/system/klipper.service
+    record "FILE /etc/systemd/system/moonraker.service"; record "FILE /etc/systemd/system/klipper.service"
+    SUDO systemctl daemon-reload
+    SUDO systemctl enable moonraker
+    step_svguard
+}
+polkit_rule_present() {   # rules.d is root/polkitd-only (mode 700), so a plain test as the user cannot see the file
+    SUDO test -f /etc/polkit-1/rules.d/moonraker.rules || SUDO test -f /usr/share/polkit-1/rules.d/moonraker.rules || SUDO test -f /etc/polkit-1/localauthority/50-local.d/10-moonraker.pkla
+}
+packagekit_present() {   # Moonraker's update manager asks PolicyKit about org.freedesktop.packagekit.*; those actions only exist when PackageKit is installed
+    if [ "$TESTING" = 1 ]; then [ -f "$HOME_DIR/.polkit_fixed" ] || { [ "${WM_TEST_PACKAGEKIT:-1}" = 1 ] && [ "${WM_TEST_POLKIT_WARN:-0}" != 1 ]; }; return; fi
+    [ -f /usr/share/polkit-1/actions/org.freedesktop.packagekit.policy ]
+}
+polkit_warnings() {   # what Moonraker itself reports about PolicyKit (one line each); empty when it reports nothing or does not answer
+    if [ "$TESTING" = 1 ]; then [ "${WM_TEST_POLKIT_WARN:-0}" = 1 ] && [ ! -f "$HOME_DIR/.polkit_fixed" ] && echo "Action org.freedesktop.packagekit.system-update is not registered"; return 0; fi
+    api_get /server/info | python3 -c 'import sys,json
+try:
+    for w in json.load(sys.stdin)["result"].get("warnings", []):
+        if "olkit" in w.lower() or "polkit" in w.lower() or "is not registered" in w: print(w.strip().splitlines()[0][:160])
+except Exception: pass' 2>/dev/null
+}
+moonraker_no_system_updates() {   # last resort when PackageKit cannot be installed: tell Moonraker not to manage Debian packages
+    local d f; d="$(cfg_dir)"; f="$(grep -l '^\[update_manager\]' "$d"/*.conf 2>/dev/null | head -n1)"
+    if [ -z "$f" ]; then f="$d/moonraker.conf"; [ -f "$f" ] || return 1; cp "$f" "$f.wm-before-polkit-fix-$STAMP"; printf '\n[update_manager]\nenable_system_updates: False\n' >> "$f"
+    elif grep -q '^enable_system_updates' "$f"; then return 0
+    else cp "$f" "$f.wm-before-polkit-fix-$STAMP"; sed -i '0,/^\[update_manager\]/s//[update_manager]\nenable_system_updates: False/' "$f"; fi
+    print_info "Set enable_system_updates: False in $(basename "$f") (copy: $(basename "$f").wm-before-polkit-fix-$STAMP): Moonraker no longer manages Debian packages."
+}
+step_packagekit() {
+    packagekit_present && return 0
+    why "Fluidd's update manager checks PackageKit's PolicyKit actions. Without the packagekit package Moonraker says 'PolKit warnings detected'."
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: sudo apt-get install -y packagekit${NC}"; return 0; fi
+    if [ "$TESTING" = 1 ]; then SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y packagekit; touch "$HOME_DIR/.polkit_fixed"; return 0; fi
+    SUDO apt-get update -qq >/dev/null 2>&1
+    if SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y packagekit >/dev/null 2>&1 && packagekit_present; then print_success "PackageKit installed (the PolKit warning source)"; return 0; fi
+    print_warning "PackageKit could not be installed (no internet, or this Debian's package list is old)."
+    moonraker_no_system_updates || warn_later "Could not stop Moonraker's PolKit warning. Run: sudo apt install packagekit, then restart Moonraker."
+}
+polkit_fix() {   # PackageKit + Moonraker's rule, restart Moonraker, look again. Returns 0 when Moonraker no longer complains.
+    step_polkit
+    [ "$DRY" = 1 ] && return 0
+    SUDO systemctl restart moonraker
+    [ "$TESTING" = 1 ] || sleep 6
+    [ -z "$(polkit_warnings)" ]
+}
+polkit_check_and_fix() {   # looked at after every install, update, repair and when the menu opens; changes nothing while a print is active
+    local w; w="$(polkit_warnings)"
+    if [ -z "$w" ] && packagekit_present; then return 0; fi
+    case "$(print_state)" in printing|paused) print_warning "Moonraker reports a PolicyKit problem (Fluidd: 'PolKit warnings detected'). It will be fixed the next time you open the menu or run --repair when no print is active."; return 0 ;; esac
+    print_warning "${w:-PackageKit is missing, so Fluidd would show 'PolKit warnings detected'.}"
+    if polkit_fix; then print_success "PolKit warning fixed. Reload the Fluidd page."; else warn_later "Moonraker still reports a PolicyKit problem. Run ./installer.sh --doctor, or: sudo apt install packagekit && sudo systemctl restart moonraker"; fi
+}
+step_polkit() {   # without this rule Moonraker may not restart services (Fluidd shows "PolKit warnings detected")
+    why "Moonraker needs a PolicyKit rule to start, stop and restart services (Klipper, crowsnest, KlipperScreen) from Fluidd. WonderMaker's own image has it; a fresh Pi does not."
+    step_packagekit
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: moonraker/scripts/set-policykit-rules.sh${NC}"; return 0; fi
+    if [ "$TESTING" = 1 ]; then echo "[test] polkit rules" >> "$HOME_DIR/.sudo.log"; return 0; fi
+    if [ -f "$HOME_DIR/moonraker/scripts/set-policykit-rules.sh" ]; then
+        if polkit_rule_present; then return 0; fi
+        bash "$HOME_DIR/moonraker/scripts/set-policykit-rules.sh" >/dev/null 2>&1 && polkit_rule_present && { record "FILE /etc/polkit-1/rules.d/moonraker.rules"; print_success "PolicyKit rule for Moonraker installed"; return 0; }
+    fi
+    warn_later "Could not install Moonraker's PolicyKit rule: Fluidd will show a PolKit warning and cannot restart services. Run: ./installer.sh --repair"
+}
+
+step_services() {
+    print_header "Step 7: Klipper and Moonraker services"
+    why "Moonraker (the web API) starts at boot. Klipper is installed but NOT enabled and NOT started until the final checks pass: the main board may not be connected yet."
+    step_services_files
+    step_polkit
+    SUDO systemctl disable klipper
+    SUDO systemctl stop klipper
+    print_success "Services installed (Klipper stays off for now)"
+}
+
+# ---------------------------------------------------------------------------
+# Klipper's Linux host MCU: a small Klipper program that runs on the Pi itself (service klipper-mcu, socket /tmp/klipper_host_mcu).
+# It is what Klipper uses for sensors wired straight to the Pi (an ADXL345 on the SPI pins, GPIO pins). WonderMaker's ~/klipper has no
+# MCU source folder, so it is built from the official Klipper source, pinned in config/pins/addons.txt. Installing it changes nothing in
+# printer.cfg here: step_pi_sensors adds the [mcu rpi] section later, once Klipper runs, and undoes it when Klipper does not come back (docs/HOST_MCU.md).
+# ---------------------------------------------------------------------------
+step_hostmcu() {
+    print_header "Step 7b: Klipper host MCU"
+    why "Adds the Klipper-Mcu service (Fluidd's Services list) so sensors wired to the Pi's own pins can be used. Nothing in printer.cfg changes."
+    local dir="$HOME_DIR/klipper-host-mcu" bin=/usr/local/bin/klipper_mcu unit=/etc/systemd/system/klipper-mcu.service pin url sha
+    # a Pi installed before 2.0.6 has no klippy/.version (Klipper's own .gitignore kept it out); copy it so the host MCU reports the host's version
+    if [ ! -f "$HOME_DIR/klipper/klippy/.version" ] && [ -f "$SCRIPT_DIR/factory/$(model_now)/klipper/klippy/.version" ] && [ -d "$HOME_DIR/klipper/klippy" ] && [ "$DRY" != 1 ] && [ "$TESTING" != 1 ]; then
+        cp "$SCRIPT_DIR/factory/$(model_now)/klipper/klippy/.version" "$HOME_DIR/klipper/klippy/.version"
+    fi
+    local want; want="$(cat "$HOME_DIR/klipper/klippy/.version" 2>/dev/null)"
+    if [ "$DRY" != 1 ] && [ "$TESTING" != 1 ] && [ -x "$bin" ] && [ -f "$unit" ] && { [ -z "$want" ] || [ "$(cat "$dir/.built-from" 2>/dev/null)" = "$want" ]; }; then
+        SUDO systemctl enable klipper-mcu >/dev/null 2>&1; SUDO systemctl start klipper-mcu >/dev/null 2>&1
+        print_success "Klipper host MCU is already installed"; return 0
+    fi
+    # Build it from the Klipper that is installed (the same version as the host, so Klipper does not warn about a version mismatch).
+    # Only when that source is missing is the older pinned download used.
+    local src="$HOME_DIR/klipper"
+    if [ -f "$src/src/linux/main.c" ] && [ -f "$src/scripts/klipper-mcu.service" ]; then
+        mkdir -p "$dir"
+    else
+        src="$dir"
+        pin="$(addon_pin klipper-upstream)"; url="${pin%|*}"; sha="${pin#*|}"
+        fetch_addon "$url" "$sha" "$dir" || { warn_later "Could not download Klipper's source for the host MCU (network?). The Klipper-Mcu service was not installed; run ./installer.sh --update to retry."; return 0; }
+    fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: make (CONFIG_MACH_LINUX) from $src, install $bin and $unit, enable and start klipper-mcu${NC}"; return 0; fi
+    if [ "$TESTING" = 1 ]; then
+        mkdir -p "$dir/out" "$dir/scripts"; echo "[test] host mcu build + install klipper-mcu from $src" >> "$HOME_DIR/.sudo.log"; return 0
+    fi
+    printf 'CONFIG_LOW_LEVEL_OPTIONS=y\nCONFIG_MACH_LINUX=y\n' > "$dir/.config"
+    heartbeat_start "building the host MCU"
+    ( cd "$src" && export PYTHONDONTWRITEBYTECODE=1 && set -- OUT="$dir/out/" KCONFIG_CONFIG="$dir/.config" \
+        && make "$@" olddefconfig >/dev/null 2>&1 && make "$@" clean >/dev/null 2>&1; make "$@" -j"$(nproc)" >/dev/null 2>&1 ) && [ -x "$dir/out/klipper.elf" ] \
+        || { heartbeat_stop; warn_later "The Klipper host MCU did not build. Klipper is not affected. Details: cd ~/klipper && make OUT=$dir/out/ KCONFIG_CONFIG=$dir/.config"; return 0; }
+    heartbeat_stop
+    SUDO install -m 755 "$dir/out/klipper.elf" "$bin"
+    SUDO install -m 644 "$src/scripts/klipper-mcu.service" "$unit"
+    [ -z "$want" ] || echo "$want" > "$dir/.built-from"
+    record "FILE $bin"; record "FILE $unit"; record "HOMEDIR klipper-host-mcu"
+    SUDO systemctl daemon-reload
+    SUDO systemctl enable klipper-mcu >/dev/null 2>&1; SUDO systemctl restart klipper-mcu
+    SUDO systemctl restart moonraker 2>/dev/null   # Moonraker looks for the services it may control only when it starts
+    print_success "Klipper host MCU installed (service klipper-mcu). The installer adds it to Klipper (as [mcu rpi]) once Klipper is running: docs/HOST_MCU.md"
+}
+
+# ---------------------------------------------------------------------------
+# Sensors that need Klipper to be running: the temperature of every printer board's chip, and the host MCU as [mcu rpi].
+# Each goes into its own file that printer.cfg includes. After adding one Klipper is restarted; if it does not come back to "ready"
+# the file and its include line are removed again, so a sensor can never leave the printer stuck.
+# ---------------------------------------------------------------------------
+pisens_mcu_names() {   # the board names in the config folder, one per line ("mcu" for the main board); never the host MCU
+    local cd="$HOME_DIR/printer_data/config"
+    grep -hE '^\[mcu( [A-Za-z0-9_]+)?\][[:space:]]*$' "$cd"/*.cfg 2>/dev/null | sed -E 's/^\[mcu ?//; s/\][[:space:]]*$//' | grep -vxE 'rpi|host' | sort -u
+}
+pisens_sensor_name() { case "$1" in "") echo mcu_main ;; EX_T) echo mcu_extruder ;; CELL) echo mcu_loadcell ;; *) echo "mcu_$(echo "$1" | tr 'A-Z' 'a-z')" ;; esac; }
+pisens_mcutemps_content() {
+    local n any=0 sn
+    echo "# Chip temperature of every printer board (main board, hub, extruder board, toolheads, load cell), written by the installer."
+    echo "# Each is the temperature of the processor chip: a few degrees above the air around the board. -20 to 110 C is wide on purpose."
+    echo "# If a reading ever leaves it Klipper stops the printer, so a wide range keeps a cold room or one bad reading from doing that."
+    while IFS= read -r n; do
+        [ -n "$n" ] || n=""
+        sn="$(pisens_sensor_name "$n")"; any=1
+        printf '\n[temperature_sensor %s]\nsensor_type: temperature_mcu\nsensor_mcu: %s\nmin_temp: -20\nmax_temp: 110\n' "$sn" "${n:-mcu}"
+    done < <(pisens_mcu_names | sed 's/^mcu$//')
+    [ "$any" = 1 ]
+}
+cfg_include_last() {   # file : add [include file] to printer.cfg after the other includes, just above the SAVE_CONFIG block (a later section may use the boards defined by earlier includes)
+    local cfg="$HOME_DIR/printer_data/config/printer.cfg"
+    rpicfg_included "$1" && return 0
+    if grep -q '^#\*# <-* SAVE_CONFIG' "$cfg"; then
+        python3 - "$cfg" "$1" <<'PYEOF'
+import sys,re
+p,f=sys.argv[1],sys.argv[2]; t=open(p).read().split("\n")
+i=next(k for k,l in enumerate(t) if re.match(r"^#\*# <-* SAVE_CONFIG",l))
+t[i:i]=["[include %s]"%f,""]
+open(p,"w").write("\n".join(t))
+PYEOF
+    else printf '\n[include %s]\n' "$1" >> "$cfg"; fi
+}
+cfg_below_save_list() {   # prints the [include] lines that sit UNDER the SAVE_CONFIG block of printer.cfg (Klipper rewrites everything under it when it saves); returns 0 when there are any
+    local cfg="$HOME_DIR/printer_data/config/printer.cfg"; [ -f "$cfg" ] || return 1
+    python3 - "$cfg" <<'PYEOF'
+import sys,re
+t=open(sys.argv[1]).read().split("\n")
+i=next((k for k,l in enumerate(t) if re.match(r"^#\*# <-* SAVE_CONFIG",l)),None)
+bad=[l.strip() for l in (t[i+1:] if i is not None else []) if re.match(r"^\s*\[include\s+\S.*\]\s*$",l)]
+print("\n".join(bad)); sys.exit(0 if bad else 1)
+PYEOF
+}
+cfg_below_save_fix() {   # move every [include] that sits under the SAVE_CONFIG block back above it (a copy of printer.cfg is kept); nothing under it = nothing changed
+    local cfg="$HOME_DIR/printer_data/config/printer.cfg"
+    cfg_below_save_list >/dev/null || return 0
+    cp "$cfg" "$cfg.wm-before-include-fix-$STAMP"
+    python3 - "$cfg" <<'PYEOF'
+import sys,re
+p=sys.argv[1]; t=open(p).read().split("\n")
+i=next(k for k,l in enumerate(t) if re.match(r"^#\*# <-* SAVE_CONFIG",l))
+inc=re.compile(r"^\s*\[include\s+\S.*\]\s*$")
+above=set(l.strip() for l in t[:i])
+moved=[]; rest=t[:i+1]
+for l in t[i+1:]:
+    if inc.match(l):
+        if l.strip() not in above and l.strip() not in moved: moved.append(l.strip())
+    else: rest.append(l)
+while rest and rest[-1]=="": rest.pop()
+rest.append("")
+rest[i:i]=moved+([""] if moved else [])
+open(p,"w").write("\n".join(rest))
+PYEOF
+    print_info "Moved the [include] line(s) that were under the SAVE_CONFIG block back above it (copy: printer.cfg.wm-before-include-fix-$STAMP)"
+}
+cfg_include_remove() { sed -i -E "/^[[:space:]]*\[include[[:space:]]+${1//./\\.}[[:space:]]*\][[:space:]]*$/d" "$HOME_DIR/printer_data/config/printer.cfg"; }
+pisens_add() {   # part label : the part's text is in CONFIG/.wm-part-<part>; put it into rpi_pi.cfg, include rpi_pi.cfg, restart Klipper, undo everything if Klipper does not become ready. Returns 0 = in use, 1 = undone
+    local part="$1" label="$2" cd="$HOME_DIR/printer_data/config" cfg="$HOME_DIR/printer_data/config/printer.cfg" ok=0 src
+    src="$cd/.wm-part-$part"
+    cp "$cfg" "$cfg.wm-before-$part-$STAMP"
+    [ -f "$cd/rpi_pi.cfg" ] && cp "$cd/rpi_pi.cfg" "$cd/rpi_pi.cfg.wm-before-$part-$STAMP"
+    python3 -I "$(rpipi_py)" set "$cd" "$part" "$src"; rm -f "$src"
+    rpicfg_included rpi_pi.cfg || { if grep -q '^\[include ' "$cfg"; then sed -i "0,/^\[include /s//[include rpi_pi.cfg]\n&/" "$cfg"; else sed -i "1i [include rpi_pi.cfg]" "$cfg"; fi; }
+    if [ "$(service_state klipper)" != active ] && [ "$TESTING" != 1 ]; then   # install: Klipper is started last, once, with everything in place
+        print_success "$label: added to rpi_pi.cfg. Klipper loads it when it starts (copy of the old printer.cfg: printer.cfg.wm-before-$part-$STAMP)"; return 0
+    fi
+    SUDO systemctl restart klipper
+    if [ "$TESTING" = 1 ]; then [ "${WM_TEST_KLIPPER_AFTER:-ready}" = ready ] && ok=1
+    else wait_klipper_ready && ok=1; fi
+    if [ "$ok" = 1 ]; then print_success "$label: Klipper restarted and is ready (copy of the old printer.cfg: printer.cfg.wm-before-$part-$STAMP)"; return 0; fi
+    print_warning "$label: Klipper did not become ready (${WAIT_ST:-error}). Taking it out again."
+    cp "$cfg.wm-before-$part-$STAMP" "$cfg"
+    if [ -f "$cd/rpi_pi.cfg.wm-before-$part-$STAMP" ]; then cp "$cd/rpi_pi.cfg.wm-before-$part-$STAMP" "$cd/rpi_pi.cfg"; else python3 -I "$(rpipi_py)" del "$cd" "$part"; fi
+    SUDO systemctl restart klipper
+    if [ "$TESTING" != 1 ]; then wait_klipper_ready && print_success "Klipper is ready again without it." || print_warning "Klipper is still '${WAIT_ST:-not answering}'. Look at the message in Fluidd, or: ./installer.sh --doctor"; fi
+    warn_later "$label was not added: Klipper did not start with it. rpi_pi.cfg and printer.cfg are back as they were; the reason is in ~/printer_data/logs/klippy.log."
+    return 1
+}
+pi_sensors_in_flow() { [ "$TESTING" != 1 ] || [ "${WM_TEST_PI_SENSORS_FLOW:-0}" = 1 ] && PISENS_INSTALL=1 step_pi_sensors; return 0; }   # (the install tests count Klipper restarts, so under test it only runs when a test asks for it)
+step_pi_sensors() {   # ./installer.sh --pi-sensors, and at the end of an install or update
+    local cd="$HOME_DIR/printer_data/config" cfg="$HOME_DIR/printer_data/config/printer.cfg" content
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would add the board temperature sensors and [mcu rpi] once Klipper is running${NC}"; return 0; }
+    [ -f "$cfg" ] || return 0
+    rpi_names_migrate
+    if [ "$(service_state klipper)" != active ] && [ "${PISENS_INSTALL:-0}" != 1 ]; then print_info "Klipper is not running, so the board temperature sensors and the host MCU were not added. Run ./installer.sh --pi-sensors after Klipper has started."; return 0; fi   # (the install and update flows set PISENS_INSTALL: they add the files and Klipper loads them when it starts)
+    case "$(print_state)" in printing|paused) print_info "A print is running: the board temperature sensors and the host MCU were not added. Run ./installer.sh --pi-sensors after the print."; return 0 ;; esac
+    print_header "Board temperatures and the host MCU"
+    why "Shows the chip temperature of every board in Fluidd, and connects Klipper to the host MCU service (sensors wired to the Pi's own pins). During the install Klipper is not running yet: the files are only added and Klipper loads them at its first start. On a Pi where Klipper runs, Klipper restarts after each and it is undone again if Klipper does not come back."
+    [ -f "$(rpipi_py)" ] && python3 -I "$(rpipi_py)" migrate "$cd" "$ULTRA/config/$(date +%F)/rpi-pi-$STAMP" | sed 's/^/        /'
+    if rpipi_has board-temps && rpicfg_included rpi_pi.cfg; then print_success "board temperature sensors are already in use"
+    elif content="$(pisens_mcutemps_content)"; then
+        printf '%s\n' "$content" > "$cd/.wm-part-board-temps"; pisens_add board-temps "Board temperature sensors" || true
+    else print_info "No [mcu] boards found in the config: board temperature sensors skipped."; fi
+    if rpipi_has host-mcu && rpicfg_included rpi_pi.cfg; then print_success "host MCU ([mcu rpi]) is already in use"
+    elif [ "$(service_state klipper-mcu)" != active ] || { [ "$TESTING" != 1 ] && [ ! -e /tmp/klipper_host_mcu ]; }; then
+        print_info "The klipper-mcu service is not running, so [mcu rpi] was not added. Run ./installer.sh --update, then ./installer.sh --pi-sensors."
+    else
+        printf '# The host MCU (service klipper-mcu): lets Klipper use sensors wired to the Pi'"'"'s own pins, as pins rpi:gpioN or rpi:None. See docs/HOST_MCU.md.\n[mcu rpi]\nserial: /tmp/klipper_host_mcu\n' > "$cd/.wm-part-host-mcu"
+        pisens_add host-mcu "Host MCU" || true
+    fi
+}
+
+step_nginx() {
+    print_header "Step 8: web server (Fluidd)"
+    why "Fluidd opens at http://<this Pi>/ and talks to Moonraker through nginx, as on the old board."
+    SUDO install -m 644 "$SCRIPT_DIR/config/nginx_common_vars.conf" /etc/nginx/conf.d/common_vars.conf
+    SUDO install -m 644 "$SCRIPT_DIR/config/nginx_upstreams.conf"   /etc/nginx/conf.d/upstreams.conf
+    SUDO install -m 644 "$SCRIPT_DIR/config/nginx_fluidd.conf"      /etc/nginx/sites-available/fluidd
+    SUDO ln -sf /etc/nginx/sites-available/fluidd /etc/nginx/sites-enabled/fluidd
+    SUDO rm -f /etc/nginx/sites-enabled/default
+    # Debian 12 makes the home folder private (700), so nginx (www-data) cannot reach ~/fluidd and answers "403 Forbidden".
+    # o+x lets other users pass through the folder to a path they already know; it does not let them list or read your files.
+    SUDO chmod o+x "$HOME_DIR"
+    for f in /etc/nginx/conf.d/common_vars.conf /etc/nginx/conf.d/upstreams.conf /etc/nginx/sites-available/fluidd; do record "FILE $f"; done
+    record "LINK /etc/nginx/sites-enabled/fluidd"
+    SUDO nginx -t && SUDO systemctl enable nginx && SUDO systemctl restart nginx
+    print_success "nginx ready"
+    screen_cam_on && screen_cam_nginx   # the file above is the factory one: /webcam/ goes to the screen board camera again
+}
+
+step_can() {
+    print_header "Step 9: CAN bus"
+    why "The main board shows up as can0 (1 Mbit). This rule brings it up when the board is plugged in."
+    SUDO install -m 644 "$SCRIPT_DIR/config/99-wm-can0.rules" /etc/udev/rules.d/99-wm-can0.rules
+    record "FILE /etc/udev/rules.d/99-wm-can0.rules"
+    SUDO install -m 644 "$SCRIPT_DIR/config/99-wm-no-modemmanager.rules" /etc/udev/rules.d/99-wm-no-modemmanager.rules
+    record "FILE /etc/udev/rules.d/99-wm-no-modemmanager.rules"
+    SUDO udevadm control --reload-rules
+    print_success "can0 rule installed"
+    print_success "ModemManager is told to leave the ACE Pro and the Klipper boards alone (it probed the ACE every 3.5 s while Klipper was stopped)"
+}
+
+
+# ---- the load cell board (CELL) firmware V2, from the project wm-load-cell-mcu ----------------------------
+cell_get() {   # downloads (git clone) or updates the project in ~/wm-load-cell-mcu; 0 = the folder is usable
+    if [ "$TESTING" = 1 ]; then
+        [ -n "${WM_TEST_CELL_DIR:-}" ] && [ -f "$WM_TEST_CELL_DIR/install.sh" ] || return 1
+        rm -rf "$CELL_DIR"; mkdir -p "$CELL_DIR"; cp -a "$WM_TEST_CELL_DIR/." "$CELL_DIR/"; return 0
+    fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would download or update https://github.com/$CELL_REPO in $CELL_DIR${NC}"; return 0; fi
+    if [ -d "$CELL_DIR/.git" ]; then
+        git -C "$CELL_DIR" pull --ff-only -q 2>/dev/null || print_warning "Could not update $CELL_DIR (no internet, or you changed files there). The copy that is there is used."
+    elif [ ! -e "$CELL_DIR" ]; then
+        git clone -q --depth 1 "https://github.com/$CELL_REPO.git" "$CELL_DIR" 2>/dev/null || { rm -rf "$CELL_DIR"; return 1; }
+    fi
+    [ -f "$CELL_DIR/install.sh" ] && [ -f "$CELL_DIR/zr-ultra/2_flash_app_can.sh" ]
+}
+cell_latest() { tr -d ' \r\n' < "$CELL_DIR/zr-ultra/firmware/LATEST" 2>/dev/null; }   # name of the newest patched firmware, for example KLP_CELL_WM_ZRU_RPI_V2_20261117
+cell_version() {   # the firmware name the board reports to Klipper (empty when Klipper does not answer or has no [mcu CELL])
+    if [ "$TESTING" = 1 ]; then echo "${WM_TEST_CELL_VERSION:-}"; return 0; fi
+    api_get '/printer/objects/query?mcu%20CELL' | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["status"]["mcu CELL"]["mcu_version"])' 2>/dev/null
+}
+cell_uuid() {   # the CAN id in [mcu CELL] (empty when none or only the installer's placeholder)
+    local u; u="$(grep -rhA8 --include='*.cfg' '^\[mcu CELL\]' "$(cfg_dir)" 2>/dev/null | awk -F': *' '/canbus_uuid/{print $2; exit}' | tr -d ' \r')"
+    case "$u" in ""|??0000000000) return 0 ;; esac; echo "$u"
+}
+step_load_cell() {   # end of a full install: is the load cell board on firmware V2? if not, offer the flash (wm-load-cell-mcu asks once itself)
+    [ "$WANT_CELL" = 1 ] || return 0
+    print_header "Load cell board (CELL): firmware V2"
+    why "The factory firmware of the load cell board sometimes gives a broken reading, which shows up as false touches and retries when the tool offsets are calibrated. Firmware V2 (project wm-load-cell-mcu) fixes it."
+    if [ -z "$(cell_uuid)" ] && [ "$TESTING" != 1 ]; then
+        print_info "The load cell board has no CAN id in the config yet (or only the placeholder), so it is not checked now. After the main board is connected and the id is set: ./installer.sh --load-cell"
+        return 0
+    fi
+    local cur latest; cur="$(cell_version)"
+    if [ -z "$cur" ]; then
+        warn_later "The load cell board was not checked: Klipper does not answer for [mcu CELL]. When Klipper is ready: ./installer.sh --load-cell (menu option 1 flashes firmware V2)."
+        return 0
+    fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}the board runs $cur; a real install downloads the project and offers firmware V2 only when the board is not on the newest one${NC}"; return 0; fi
+    cell_get || { warn_later "The load cell board firmware could not be downloaded from github.com/$CELL_REPO (no internet?). Later: ./installer.sh --load-cell"; return 0; }
+    latest="$(cell_latest)"
+    case "$cur" in
+        *"$latest"*) print_success "The load cell board already runs $cur. Nothing to do."; return 0 ;;
+    esac
+    echo "  The board runs: $cur"; echo "  Newest from the project: $latest"
+    if [ "${WM_ASSUME_YES:-0}" = 1 ] || [ ! -t 0 ]; then
+        warn_later "The load cell board runs $cur, not $latest. It was NOT flashed (this run does not ask questions). Flash it with: ./installer.sh --load-cell"
+        return 0
+    fi
+    echo "  The flash script shows exactly what it will do and asks once. Printer idle, heaters off."
+    if [ "$TESTING" = 1 ]; then echo "[test] flash $latest" >> "$HOME_DIR/.cell.log"; return 0; fi
+    if bash "$CELL_DIR/zr-ultra/2_flash_app_can.sh"; then print_success "Load cell board flash finished."; else warn_later "The load cell board flash did not finish (or you answered no). Run it later: ./installer.sh --load-cell"; fi
+}
+do_load_cell() {   # ./installer.sh --load-cell and Advanced > Load cell board: the menu of the wm-load-cell-mcu project
+    print_header "Load cell board (CELL)"
+    echo "  The firmware of the load cell board (under the heated bed) and its flash menu come from github.com/$CELL_REPO."
+    cell_get || { print_error "Could not download github.com/$CELL_REPO into $CELL_DIR."; echo "  Connect the Pi to the network and try again."; return 1; }
+    if [ "$TESTING" = 1 ]; then echo "[test] load cell menu" >> "$HOME_DIR/.cell.log"; return 0; fi
+    [ "$DRY" = 1 ] && return 0
+    bash "$CELL_DIR/install.sh"
+}
+
+panel_get() {  # sets PANEL_ZIP and PANEL_FROM: the newest panel from the panel repository, else the copy in this repository
+    [ -n "$PANEL_ZIP" ] && return 0
+    local tmp="$BACKUP_ROOT/.panel-dl"; local name="" api raw
+    if [ "$TESTING" = 1 ]; then
+        if [ -n "${WM_TEST_PANEL_DIR:-}" ]; then name="$(ls "$WM_TEST_PANEL_DIR"/*.zip 2>/dev/null | head -1)"; [ -n "$name" ] && PANEL_ZIP="$name" && PANEL_FROM="the panel repository (test)" && return 0; fi
+    elif [ "$DRY" != 1 ]; then
+        mkdir -p "$tmp"; rm -f "$tmp"/*
+        api="https://api.github.com/repos/$PANEL_REPO/contents/fluidd?ref=main"
+        raw="https://raw.githubusercontent.com/$PANEL_REPO/main/fluidd"
+        name="$(curl -fsS -m 15 "$api" 2>/dev/null | python3 -c 'import sys,json
+try: print(next(f["name"] for f in json.load(sys.stdin) if f["name"].endswith(".zip")))
+except Exception: pass' 2>/dev/null)"
+        if [ -n "$name" ] && curl -fsSL -m 120 -o "$tmp/$name" "$raw/$name" && curl -fsSL -m 20 -o "$tmp/$name.sha256" "$raw/$name.sha256" \
+           && ( cd "$tmp" && sha256sum -c "$name.sha256" >/dev/null 2>&1 ) \
+           && python3 -c 'import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);assert "index.html" in z.namelist()' "$tmp/$name" 2>/dev/null; then
+            PANEL_ZIP="$tmp/$name"; PANEL_FROM="github.com/$PANEL_REPO ($name)"
+            print_success "Latest Fluidd panel downloaded from $PANEL_REPO (checksum ok)"; return 0
+        fi
+        print_warning "Could not get a verified panel from $PANEL_REPO."
+    fi
+    print_error "The Fluidd panel could not be downloaded from $PANEL_REPO."
+    echo "  Without internet the web page cannot be installed. Connect the Pi to the network, then run: ./installer.sh --update"
+    return 1
+}
+
+step_panel() {
+    [ -f "$HOME_DIR/fluidd/index.html" ] || [ "$DRY" = 1 ] || WANT_PANEL=1   # factory files carry no web interface: the panel build is the web interface
+    [ "$WANT_PANEL" = 1 ] || return 0
+    PANEL_FAILED=1   # stays 1 on every early return, so a failed install is not recorded as done (the next --update tries again)
+    print_header "Step 10: Fluidd with the WonderMaker Toolheads panel"
+    why "The Fluidd that came with the printer has no toolhead panel for the Ultra-S. This build adds it (toolheads, chamber, air filter, colours, filament mapping)."
+    panel_get || { warn_later "The Fluidd web page was NOT installed (panel download failed). Connect to the internet, then run ./installer.sh --update."; return; }
+    local zip="$PANEL_ZIP"
+    if [ "$DRY" != 1 ]; then
+        python3 -c "import zipfile,sys;zipfile.ZipFile(sys.argv[1])" "$zip" 2>/dev/null || { print_warning "Zip unreadable: panel skipped."; return; }
+        # The new page is unpacked next to the old one and only a complete unpack replaces it. One copy of the old page is kept (older copies are removed).
+        local keep="$BACKUP_ROOT/fluidd-$STAMP" fresh="$HOME_DIR/fluidd.new" o
+        rm -rf "$fresh"; mkdir -p "$fresh" "$BACKUP_ROOT"
+        python3 - "$zip" "$fresh" <<'PY' || { rm -rf "$fresh"; warn_later "The Fluidd web page was NOT updated (the download is damaged). The old one is untouched. Run ./installer.sh --update to try again."; return; }
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+bad = z.testzip()
+if bad:
+    sys.exit("damaged file in the zip: " + bad)
+z.extractall(sys.argv[2])
+PY
+        [ -f "$fresh/index.html" ] || { rm -rf "$fresh"; warn_later "The Fluidd web page was NOT updated (the download has no index.html). The old one is untouched."; return; }
+        [ -f "$HOME_DIR/fluidd/config.json" ] && cp "$HOME_DIR/fluidd/config.json" "$fresh/config.json"
+        if [ -d "$HOME_DIR/fluidd" ]; then rm -rf "$keep"; mv "$HOME_DIR/fluidd" "$keep"; fi
+        mv "$fresh" "$HOME_DIR/fluidd"
+        for o in "$BACKUP_ROOT"/fluidd-*; do [ -d "$o" ] && [ "$o" != "$keep" ] && rm -rf "$o"; done
+    else echo -e "  ${DIM}would replace ~/fluidd with the panel build (old one saved)${NC}"; fi
+    PANEL_FAILED=0
+    print_success "Fluidd panel installed (from $PANEL_FROM). Hard-refresh the browser (Ctrl/Cmd+Shift+R)."
+}
+
+# ---------------------------------------------------------------------------
+# NetworkManager for KlipperScreen's Network panel. KlipperScreen's own script reboots the Pi when it installs this, so it is done here
+# instead: install, enable, switch dhcpcd off, and leave the actual switch to the next reboot.
+# ---------------------------------------------------------------------------
+NETMGR_STATE="$BACKUP_ROOT/netmgr.state"
+nm_active() { [ "$(service_state NetworkManager)" = active ] || { [ "$TESTING" = 1 ] && [ "${WM_TEST_NM:-0}" = 1 ]; }; }
+step_netmgr() {
+    [ "$WANT_NETMGR" = 1 ] || return 0
+    print_header "NetworkManager (for KlipperScreen's Network panel)"
+    why "KlipperScreen's Network panel talks to NetworkManager. Without it the panel does not appear."
+    if nm_active; then print_success "NetworkManager is already running: nothing to change."; return 0; fi
+    print_warning "The network may drop when the Pi restarts with NetworkManager. After the reboot, if it does not come back: connect a cable, or use the screen's Network panel, or run: sudo nmtui"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: apt-get install network-manager; disable dhcpcd; enable NetworkManager (no restart)${NC}"; return 0; fi
+    if [ "$(service_enabled dhcpcd)" = enabled ]; then mkdir -p "$BACKUP_ROOT"; echo "dhcpcd-was-enabled" > "$NETMGR_STATE"; fi
+    SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y network-manager || { warn_later "NetworkManager could not be installed (network?). Run ./installer.sh --update --network-manager on to retry."; return 0; }
+    SUDO mkdir -p /etc/NetworkManager/conf.d
+    SUDO systemctl disable dhcpcd 2>/dev/null
+    SUDO systemctl enable NetworkManager
+    warn_later "NetworkManager is installed and starts at the next reboot (sudo reboot). Until then nothing changed. If the network does not come back: cable, or sudo nmtui, or ./installer.sh --remove network-manager from the screen's keyboard."
+    print_success "NetworkManager installed and enabled. It takes over at the next reboot."
+}
+
+# Wi-Fi (B-041): the Raspberry Pi 4's Wi-Fi chip (BCM43455) can hang while the Pi keeps running (no Fluidd, no SSH, the touchscreen loses it).
+# Only on a Pi whose network is Wi-Fi through NetworkManager: power saving is turned off on that connection. 2.19.1: the Wi-Fi watchdog
+# (2.11.0 to 2.19.0) is gone, it could not bring a chip back that had dropped off its bus; an old one is stopped and deleted at the next
+# install or update. A Pi on a cable is left alone.
+WIFI_WD_BIN=/usr/local/sbin/wm-wifi-watchdog; WIFI_WD_UNIT=/etc/systemd/system/wm-wifi-watchdog.service
+wifi_dev() {   # the interface of the default route, when it is Wi-Fi
+    local d
+    if [ "$TESTING" = 1 ]; then d="${WM_TEST_WIFI_DEV:-}"; else d="$(ip route 2>/dev/null | awk '/^default/ {for (i=1;i<NF;i++) if ($i=="dev") {print $(i+1); exit}}')"; fi
+    case "$d" in wl*) echo "$d" ;; esac
+}
+wifi_con() {   # the NetworkManager connection on that interface
+    [ "$TESTING" = 1 ] && { echo "${WM_TEST_WIFI_CON:-testwifi}"; return 0; }
+    nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | awk -F: -v d="$1" '$2==d {print $1; exit}'
+}
+wifi_powersave() {   # 2 = off (disable), 3 = on, 0 = default (on)
+    [ "$TESTING" = 1 ] && { cat "$HOME_DIR/.wifi_powersave" 2>/dev/null || echo default; return 0; }
+    nmcli -g 802-11-wireless.powersave connection show "$1" 2>/dev/null
+}
+wifi_wd_present() {   # an old Wi-Fi watchdog (2.11.0 to 2.19.0) is still installed
+    if [ "$TESTING" = 1 ]; then [ -e "$HOME_DIR/.wifiwd/wm-wifi-watchdog" ]; return; fi
+    [ -e "$WIFI_WD_BIN" ] || [ -e "$WIFI_WD_UNIT" ]
+}
+wifi_ok() {   # 0 when there is nothing to do (no Wi-Fi, or power saving off and no old watchdog)
+    local dev con; dev="$(wifi_dev)"; [ -n "$dev" ] && nm_active || { wifi_wd_present && return 1; return 0; }
+    con="$(wifi_con "$dev")"
+    if [ -n "$con" ] && [ "$(wifi_powersave "$con")" != disable ]; then return 1; fi
+    wifi_wd_present && return 1
+    return 0
+}
+wifi_wd_remove() {   # stop and delete the old Wi-Fi watchdog
+    wifi_wd_present || return 0
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would stop and delete the old wm-wifi-watchdog${NC}"; return 0; fi
+    if [ "$TESTING" = 1 ]; then rm -rf "$HOME_DIR/.wifiwd"; echo "[test] wifi watchdog removed" >> "$HOME_DIR/.sudo.log"; return 0; fi
+    SUDO systemctl stop wm-wifi-watchdog 2>/dev/null; SUDO systemctl disable wm-wifi-watchdog 2>/dev/null
+    SUDO rm -f "$WIFI_WD_UNIT" "$WIFI_WD_BIN" /var/lib/wm-wifi-watchdog.reboot
+    SUDO systemctl daemon-reload
+    print_success "The old Wi-Fi watchdog was stopped and deleted."
+}
+step_wifi() {   # every install and update, and ./installer.sh --wifi
+    local dev con ps bk
+    wifi_wd_remove                                              # an old watchdog goes first, on any kind of network
+    dev="$(wifi_dev)"
+    [ -n "$dev" ] || return 0                                   # cable (or no network): nothing more to do
+    if ! nm_active; then print_info "The Pi is on Wi-Fi without NetworkManager: Wi-Fi power saving was left as it is."; return 0; fi
+    con="$(wifi_con "$dev")"
+    [ -n "$con" ] || { print_info "No active NetworkManager connection on $dev: the Wi-Fi was left as it is."; return 0; }
+    ps="$(wifi_powersave "$con")"
+    [ "$ps" = disable ] && { print_success "Wi-Fi: power saving is off"; return 0; }
+    print_header "Wi-Fi: power saving off"
+    why "The Pi's Wi-Fi chip can hang while the Pi itself keeps running: Fluidd, SSH and the touchscreen lose the printer until a power cycle. With power saving off this is rarer. A network cable is the most reliable."
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would turn Wi-Fi power saving off on \"$con\"${NC}"; return 0; fi
+    bk="$BACKUP_ROOT/wifi-$STAMP"; mkdir -p "$bk"
+    if [ "$TESTING" = 1 ]; then echo "[test] wifi powersave off ($con, was $ps)" >> "$HOME_DIR/.sudo.log"; echo disable > "$HOME_DIR/.wifi_powersave"
+    else
+        SUDO cp -p "/etc/NetworkManager/system-connections/$con.nmconnection" "$bk/" 2>/dev/null
+        echo "$con $ps" > "$bk/powersave-before"
+        SUDO nmcli connection modify "$con" 802-11-wireless.powersave 2 || { warn_later "Wi-Fi power saving could not be turned off on $con."; }
+    fi
+    print_success "Wi-Fi power saving off on \"$con\" (was $ps). It takes effect at the next reconnect or reboot. Copy: $bk"
+}
+
+# ---------------------------------------------------------------------------
+# Troubleshooting logs (item 30, F-107) and the black box (F-022)
+#   wm-log-digest: a small service that writes wm-events.log, wm-config-check.log, wm-ace.log, wm-system.log and a copy of the black box
+#                  into ~/printer_data/logs, where Fluidd shows them (Configuration > Other Files). It only reads.
+#   wm-blackbox:   one line every 10 s into /var/log/wm-blackbox (power, temperature, load, kernel USB messages) so a crash
+#                  leaves a trace; the system log is kept on the disk for it.
+# ---------------------------------------------------------------------------
+DIGEST_UNIT=/etc/systemd/system/wm-log-digest.service
+BB_BIN=/usr/local/sbin/wm-blackbox; BB_UNIT=/etc/systemd/system/wm-blackbox.service; BB_JRN=/etc/systemd/journald.conf.d/50-wm-persistent.conf
+digest_script() { echo "$HOME_DIR/printer_data/scripts/wm_log_digest.py"; }
+logs_ok() {   # 0 when the digest script and service are in place and running
+    cmp -s "$SCRIPT_DIR/scripts/wm_log_digest.py" "$(digest_script)" || return 1
+    if [ "$TESTING" = 1 ]; then [ "$(service_state wm-log-digest)" = active ]; return; fi
+    cmp -s "$SCRIPT_DIR/config/wm-log-digest.service" "$DIGEST_UNIT" || return 1
+    [ "$(service_state wm-log-digest)" = active ]
+}
+step_logs() {   # every install and update, and ./installer.sh --logs
+    [ -f "$SCRIPT_DIR/scripts/wm_log_digest.py" ] && [ -f "$SCRIPT_DIR/config/wm-log-digest.service" ] || { print_warning "scripts/wm_log_digest.py is missing from this repository: the troubleshooting logs are not installed"; return 0; }
+    logs_ok && { print_success "Logs: wm-events.log, wm-config-check.log, wm-ace.log and wm-system.log are written (Fluidd > Configuration > Other Files)"; return 0; }
+    print_header "Troubleshooting logs"
+    why "klippy.log is mostly a copy of the config written at every start, so the real events are buried. A small service keeps four short logs (what happened, config problems, the ACE Pro, the system services) next to it, and a copy of the black box. They stay small (a few MB in all) and can be opened in Fluidd; --support-bundle includes them."
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would install wm_log_digest.py and the wm-log-digest service${NC}"; return 0; fi
+    local sd="$HOME_DIR/printer_data/scripts"; mkdir -p "$sd" "$HOME_DIR/printer_data/logs"
+    install -m 755 "$SCRIPT_DIR/scripts/wm_log_digest.py" "$sd/wm_log_digest.py"; record "FILE $sd/wm_log_digest.py"
+    SUDO install -o root -g root -m 644 "$SCRIPT_DIR/config/wm-log-digest.service" "$DIGEST_UNIT"; record "FILE $DIGEST_UNIT"
+    SUDO systemctl daemon-reload
+    SUDO systemctl enable wm-log-digest
+    SUDO systemctl restart wm-log-digest
+    print_success "Troubleshooting logs installed and running: Fluidd > Configuration > Other Files > wm-events.log, wm-config-check.log, wm-ace.log, wm-system.log"
+}
+blackbox_ok() {   # 0 when the black box script, its service and the on-disk system log setting are in place and running
+    if [ "$TESTING" = 1 ]; then cmp -s "$SCRIPT_DIR/scripts/wm-blackbox" "$HOME_DIR/.blackbox/wm-blackbox" && [ "$(service_state wm-blackbox)" = active ]; return; fi
+    cmp -s "$SCRIPT_DIR/scripts/wm-blackbox" "$BB_BIN" && cmp -s "$SCRIPT_DIR/config/wm-blackbox.service" "$BB_UNIT" && cmp -s "$SCRIPT_DIR/config/50-wm-persistent.conf" "$BB_JRN" || return 1
+    [ "$(service_state wm-blackbox)" = active ]
+}
+step_blackbox() {   # every install and update, and ./installer.sh --logs
+    [ -f "$SCRIPT_DIR/scripts/wm-blackbox" ] && [ -f "$SCRIPT_DIR/config/wm-blackbox.service" ] && [ -f "$SCRIPT_DIR/config/50-wm-persistent.conf" ] || { print_warning "scripts/wm-blackbox is missing from this repository: the black box is not installed"; return 0; }
+    blackbox_ok && { print_success "Black box: the Pi is recorded every 10 s (wm-blackbox report shows the last crash)"; return 0; }
+    print_header "Black box"
+    why "A freeze, a power dip or a hard reset leaves no trace by itself (the Pi keeps its system log in memory only). The black box writes one line every 10 s to the disk (power flags, temperature, load, memory, USB and disk messages) and says at the next start whether the last stop was clean. The system log is kept on the disk (up to 200 MB) for the same reason."
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would install wm-blackbox, its service and the on-disk system log setting${NC}"; return 0; fi
+    if [ "$TESTING" = 1 ]; then mkdir -p "$HOME_DIR/.blackbox"; cp "$SCRIPT_DIR/scripts/wm-blackbox" "$HOME_DIR/.blackbox/"; echo "[test] blackbox installed" >> "$HOME_DIR/.sudo.log"
+    else
+        SUDO install -o root -g root -m 755 "$SCRIPT_DIR/scripts/wm-blackbox" "$BB_BIN"
+        SUDO install -o root -g root -m 644 "$SCRIPT_DIR/config/wm-blackbox.service" "$BB_UNIT"
+        SUDO mkdir -p /etc/systemd/journald.conf.d
+        SUDO install -o root -g root -m 644 "$SCRIPT_DIR/config/50-wm-persistent.conf" "$BB_JRN"
+    fi
+    record "FILE $BB_BIN"; record "FILE $BB_UNIT"; record "FILE $BB_JRN"
+    SUDO systemctl daemon-reload
+    SUDO systemctl restart systemd-journald
+    SUDO systemctl enable wm-blackbox
+    SUDO systemctl restart wm-blackbox
+    print_success "Black box installed and running (wm-blackbox report shows the last crash; the log is /var/log/wm-blackbox/blackbox.log)"
+}
+
+# ---------------------------------------------------------------------------
+# One folder for every backup: ~/ultra-backup, sorted by type, with size limits (item 36)
+# ---------------------------------------------------------------------------
+ultrabackup_dst() { echo "$HOME_DIR/printer_data/wm-tools/wm_ultra_backup.py"; }
+ultrabackup_ok() {   # 0 when the helper is in place and no backup is lying around outside ~/ultra-backup
+    cmp -s "$SCRIPT_DIR/scripts/wm_ultra_backup.py" "$(ultrabackup_dst)" || return 1
+    python3 -I "$(ultrabackup_dst)" sweep --dry-run --home "$HOME_DIR" >/dev/null 2>&1; [ "$?" != 10 ]
+}
+step_cfgindex() {   # every install and update (F-158): the header index of the rpi_*.cfg files and zr_tools.cfg, comments only
+    [ -f "$SCRIPT_DIR/scripts/wm_cfg_index.py" ] || return 0
+    local cd="$HOME_DIR/printer_data/config"; [ -d "$cd" ] || return 0
+    why "Each config file of this project gets a list of its macros after its header (visible and hidden, with what each does), so the files are easy to read. Only comment lines are added; a file that changes is copied to printer_data/config/backup first."
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would add or refresh the macro index in the rpi_*.cfg files${NC}"; return 0; fi
+    local out; out="$(python3 -I "$SCRIPT_DIR/scripts/wm_cfg_index.py" write "$cd" 2>&1)"
+    [ -n "$out" ] && print_success "Macro index refreshed: $(echo "$out" | sed 's/^indexed //' | tr '\n' ' ')"
+    return 0
+}
+step_ultrabackup() {   # every install and update, and ./installer.sh --ultra-backup
+    [ -f "$SCRIPT_DIR/scripts/wm_ultra_backup.py" ] || { print_warning "scripts/wm_ultra_backup.py is missing from this repository: the backup folder helper was not installed."; return 0; }
+    ultrabackup_ok && { print_success "Backups: all in ~/ultra-backup ($(python3 -I "$(ultrabackup_dst)" status --home "$HOME_DIR" | awk '/total/{print $(NF-4), "MB of", $(NF-1)}' | head -1) MB)"; return 0; }
+    print_header "Backup folder (ultra-backup)"
+    why "Backups were spread over many folders (config copies next to the config, wm-backups, acepro-backup, fluidd_backup_*). They now live in one folder, ~/ultra-backup, sorted by type. Every copy of a config file (also the newest) goes into printer_data/config/backup, so the config folder only holds the live files (the safeguard copies saved_variables.cfg.wm-good and *.wm-model-bak stay). The newest undo folder of each installer stays where it is: --undo restores from it. The folder is limited to 400 MB: the oldest go first, and nothing is written when the Pi has less than 2 GB free."
+    if [ "$DRY" = 1 ]; then python3 -I "$SCRIPT_DIR/scripts/wm_ultra_backup.py" sweep --dry-run --home "$HOME_DIR" | sed 's/^/    /' | tail -8; return 0; fi
+    mkdir -p "$(dirname "$(ultrabackup_dst)")"; install -m 755 "$SCRIPT_DIR/scripts/wm_ultra_backup.py" "$(ultrabackup_dst)"; record "FILE $(ultrabackup_dst)"
+    local out rc; out="$(python3 -I "$(ultrabackup_dst)" sweep --home "$HOME_DIR" 2>&1)"; rc=$?
+    case "$rc" in
+        0|10) print_success "Backups: $out. The old place of each one is in ~/ultra-backup/INDEX.txt" ;;
+        *)    warn_later "The backup folder helper stopped: $out" ;;
+    esac
+    print_info "$(python3 -I "$(ultrabackup_dst)" status --home "$HOME_DIR" | sed 's/^/ /' | tr '\n' ';' | cut -c1-300)"
+}
+
+# ---------------------------------------------------------------------------
+# Touchscreen (KlipperScreen + ZR Tools). NOT YET TESTED ON HARDWARE.
+# ---------------------------------------------------------------------------
+KS_DIR="$HOME_DIR/KlipperScreen"
+ZR_CONF="$HOME_DIR/printer_data/config/zr_screen.conf"
+
+detect_screen() {  # prints "WIDTHxHEIGHT touch|notouch" (size empty when no screen is found)
+    local res="" touch=notouch f m
+    if [ -n "${WM_TEST_SCREEN+x}" ]; then res="$WM_TEST_SCREEN"; [ "${WM_TEST_TOUCH:-0}" = 1 ] && touch=touch
+    else
+        for f in /sys/class/drm/card*-*/status; do
+            [ -r "$f" ] && [ "$(cat "$f" 2>/dev/null)" = connected ] || continue
+            m="$(head -n1 "$(dirname "$f")/modes" 2>/dev/null)"; [ -n "$m" ] && { res="$m"; break; }
+        done
+        local e; for e in /sys/class/input/event*; do
+            [ -e "$e" ] && udevadm info -q property -p "$e" 2>/dev/null | grep -q '^ID_INPUT_TOUCHSCREEN=1' && { touch=touch; break; }
+        done
+    fi
+    echo "${res:-} $touch"
+}
+
+screen_density_hint() {  # WIDTHxHEIGHT -> compact|comfortable (short side <= 520 or long side <= 900 is compact)
+    local w="${1%%x*}" h="${1##*x}"
+    [[ "$w" =~ ^[0-9]+$ ]] || { echo compact; return; }
+    if ! [[ "$h" =~ ^[0-9]+$ ]]; then [ "$w" -le 900 ] && echo compact || echo comfortable; return; fi
+    local s=$w l=$h; [ "$h" -lt "$w" ] && { s=$h; l=$w; }
+    if [ "$s" -le 520 ] || [ "$l" -le 900 ]; then echo compact; else echo comfortable; fi
+}
+
+screen_orientation() {  # WIDTHxHEIGHT -> wide|tall
+    local w="${1%%x*}" h="${1##*x}"
+    [[ "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ ]] && [ "$h" -gt "$w" ] && echo tall || echo wide
+}
+
+do_screen_test() {
+    print_header "Screen test (read-only)"
+    local r t; read -r r t < <(detect_screen)
+    if [ -n "$r" ]; then print_success "Screen found: $r (ZR Tools size: comfortable by default; Auto would pick $(screen_density_hint "$r"))"
+        print_success "Orientation: $(screen_orientation "$r") (ZR Tools lays itself out for wide and tall screens)"; else print_warning "No screen found on the Pi's video output."; fi
+    [ "$t" = touch ] && print_success "Touch device found." || print_warning "No touch device found (a USB touch cable, or the screen has no touch)."
+    echo "  Rotation is an operating-system setting, see README 'Touchscreen'."
+}
+
+write_screen_conf() {  # layout from --screen-layout, else keep, else default tabs; density comfortable
+    local layout="$SCREEN_LAYOUT" theme=dark density=comfortable
+    if [ -f "$ZR_CONF" ]; then
+        [ -n "$layout" ] || layout="$(sed -n 's/^layout *= *//p' "$ZR_CONF" | head -n1)"
+        theme="$(sed -n 's/^theme *= *//p' "$ZR_CONF" | head -n1)"; density="$(sed -n 's/^density *= *//p' "$ZR_CONF" | head -n1)"
+    fi
+    case "$layout" in tabs|grid) ;; *) layout=tabs ;; esac
+    case "$theme" in dark|light) ;; *) theme=dark ;; esac
+    case "$density" in auto|compact|comfortable) ;; *) density=comfortable ;; esac
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would write $ZR_CONF (layout=$layout)${NC}"; return 0; }
+    mkdir -p "$(dirname "$ZR_CONF")"
+    printf '# Written by ./installer.sh and the ZR Tools Settings page\n[screen]\nlayout = %s\ndensity = %s\ntheme = %s\n' "$layout" "$density" "$theme" > "$ZR_CONF"
+}
+
+copy_zr_panel() {  # (re)copy the panel files into KlipperScreen
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would copy zr_tools/*.py into ~/KlipperScreen/panels${NC}"; return 0; }
+    mkdir -p "$KS_DIR/panels"
+    cp "$REPO_DIR"/zr_tools/{zr_tools.py,zr_views.py,zr_logic.py} "$KS_DIR/panels/"
+    python3 "$REPO_DIR/zr_tools/make_unlock_icon.py" "$KS_DIR" >/dev/null 2>&1 || true   # the "Unlock gripper" button asks for an icon that KlipperScreen does not ship
+    if [ -d "$KS_DIR/.git" ]; then   # KlipperScreen updates must not delete our files
+        mkdir -p "$KS_DIR/.git/info"
+        grep -qs '^panels/zr_' "$KS_DIR/.git/info/exclude" || echo 'panels/zr_*.py' >> "$KS_DIR/.git/info/exclude"
+    fi
+}
+
+step_macros() {   # only the ZR Tools macros in printer.cfg: for people whose screen is the WonderMaker screen board (its KlipperScreen sends these macros to this Pi)
+    print_header "Step 11: ZR Tools macros (no KlipperScreen on this Pi)"
+    why "The ZR Tools page on the WonderMaker screen board sends commands such as ZR_SET_TOOL_INFO and ZR_LOAD to Klipper. They are macros in zr_tools.cfg, which printer.cfg must include. KlipperScreen itself is not installed on this Pi."
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would copy zr_tools.cfg and add [include zr_tools.cfg] to printer.cfg${NC}"; return 0; fi
+    mkdir -p "$HOME_DIR/printer_data/config"
+    if [ -f "$HOME_DIR/printer_data/config/printer.cfg" ]; then
+        HOME="$HOME_DIR" ZR_NO_RESTART=1 bash "$REPO_DIR/zr_tools/install_zr_tools.sh" >/dev/null && print_success "ZR Tools macros added to printer.cfg" \
+            || warn_later "Could not add the ZR Tools macros. Run ./installer.sh --update."
+    else warn_later "printer.cfg not found: ZR Tools macros not installed. Run ./installer.sh --update."; fi
+}
+
+step_screen() {
+    [ "$WANT_SCREEN" = macros ] && { step_macros; return 0; }
+    [ "$WANT_SCREEN" = 1 ] || return 0
+    print_header "Step 11: touchscreen (KlipperScreen + ZR Tools)"
+    why "A screen connected to the Pi shows KlipperScreen with a ZR Tools page: toolheads, filament, climate, calibration, ACE Pro (if present). Not yet tested on hardware."
+    local r t; read -r r t < <(detect_screen)
+    [ -n "$r" ] && print_info "Screen found: $r, size comfortable by default" || print_warning "No screen detected now. KlipperScreen is installed anyway."
+    [ "$t" = touch ] || print_warning "No touch device detected now."
+    local pin url sha; pin="$(addon_pin klipperscreen)"; url="${pin%|*}"; sha="${pin#*|}"
+    fetch_addon "$url" "$sha" "$KS_DIR" || { warn_later "Could not download KlipperScreen (network?). Run ./installer.sh --update later."; return 0; }
+    local be=X comp=""
+    case "$SCREEN_BACKEND" in weston) be=W; comp=weston ;; cage) be=W; comp=cage ;; esac
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: KlipperScreen-install.sh (backend $SCREEN_BACKEND, service on, NetworkManager off)${NC}"
+    elif [ "$TESTING" = 1 ]; then echo "[test] KlipperScreen-install backend=$SCREEN_BACKEND" >> "$HOME_DIR/.sudo.log"
+    else
+        ( cd "$KS_DIR" && BACKEND="$be" COMPOSITOR="$comp" SERVICE=y START=0 NETWORK=n bash scripts/KlipperScreen-install.sh ) \
+            || { warn_later "KlipperScreen install failed (see output above). Run ./installer.sh --update to retry."; return 0; }
+    fi
+    copy_zr_panel
+    write_screen_conf
+    if [ "$DRY" != 1 ]; then
+        mkdir -p "$HOME_DIR/printer_data/config"
+        [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] && \
+            HOME="$HOME_DIR" ZR_NO_RESTART=1 bash "$REPO_DIR/zr_tools/install_zr_tools.sh" >/dev/null || warn_later "printer.cfg not found: ZR Tools macros not installed. Run ./installer.sh --update."
+    fi
+    record "HOMEDIR KlipperScreen"; record "FILE /etc/systemd/system/KlipperScreen.service"
+    SUDO systemctl enable KlipperScreen
+    [ "$AUTOSTART" = 1 ] && SUDO systemctl restart KlipperScreen
+    print_success "Touchscreen installed (layout: $(sed -n 's/^layout *= *//p' "$ZR_CONF" 2>/dev/null | head -n1)). Change it with ./installer.sh --screen-layout tabs|grid or on the ZR Tools Settings page."
+    [ "$SCREEN_BACKEND" = x11 ] && echo "  Rotate: add 'xrandr --output <name> --rotate left' to an X11 autostart (README, 'Touchscreen')."
+}
+
+PROG_RM=0; PROG_RM_SEEN=""
+rm_event() {   # key label : one step of a single removal reached; the bar moves once per kind of step
+    [ "${PROG_RM:-0}" = 1 ] || return 0
+    case " $PROG_RM_SEEN " in *" $1 "*) return 0 ;; esac
+    PROG_RM_SEEN="$PROG_RM_SEEN $1"
+    progress_bar "$(echo $PROG_RM_SEEN | wc -w)" 5 "$2"
+}
+rm_path() {   # delete files or folders; when the Pi user may not (an uninstaller ran as root and left root-owned files), retry with sudo
+    local p
+    rm_event files "Removing the files"
+    for p in "$@"; do
+        [ -e "$p" ] || [ -L "$p" ] || continue
+        rm -rf "$p" 2>/dev/null
+        if [ -e "$p" ] || [ -L "$p" ]; then case "$p" in /etc/*|/usr/*|/var/*) ;; *) print_info "Needs administrator rights: $p" ;; esac; SUDO rm -rf "$p"; fi
+        if [ "$TESTING" != 1 ] && { [ -e "$p" ] || [ -L "$p" ]; }; then print_warning "Could not delete $p. Try: sudo rm -rf '$p'"; fi
+    done
+}
+python39_added() { [ -f "$STATE" ] && grep -q "^DIR $HOME_DIR/.pythons\$" "$STATE" && { [ -d "$HOME_DIR/.pythons" ] || [ -d "$HOME_DIR/uvtool" ]; }; }
+remove_python39() {   # only the Python 3.9 this installer added (~/.pythons, ~/uvtool); a Python you had before is never touched
+    python39_added || return 0
+    ask_yn "Also remove the Python 3.9 this installer added (~/.pythons and ~/uvtool)? Nothing else uses it once Klipper is gone." y || return 0
+    rm_path "$HOME_DIR/.pythons" "$HOME_DIR/uvtool"; print_success "Python 3.9 removed"
+}
+leftover_report() {   # what of this installer is still on the Pi, and how to remove it
+    local f n=0 list=()
+    for f in "$HOME_DIR/printer_data" "$HOME_DIR/TM_T1" "$HOME_DIR/wm-stage" "$ULTRA" "$HOME_DIR/wm-install-logs" "$BACKUP_ROOT" "$HOME_DIR"/wm-support-*.tgz "$REPO_DIR"; do [ -e "$f" ] && list+=("$f"); done
+    [ "${#list[@]}" = 0 ] && return 0
+    echo "  Still on this Pi (kept on purpose, or not part of the removal):"
+    for f in "${list[@]}"; do
+        case "$f" in
+            "$HOME_DIR/printer_data"|"$HOME_DIR/TM_T1") echo "    $f   -> Uninstall: My printer data" ;;
+            "$REPO_DIR") echo "    $f   -> Uninstall: Clean up installer files (the installer folder)" ;;
+            *) echo "    $f   -> Uninstall: Clean up installer files" ;;
+        esac
+    done
+}
+run_official_uninstall() {   # name dir command... : the add-on's OWN uninstaller, run first. Returns 0 when it ran and succeeded.
+    local name="$1" dir="$2"; shift 2
+    rm_event official "Running $name's own uninstaller"
+    if [ "$TESTING" = 1 ]; then echo "[test] official uninstall $name: $*" >> "$HOME_DIR/.sudo.log"; return 0; fi
+    [ -d "$dir" ] || return 1
+    print_info "Running $name's own uninstaller ($*) ..."
+    heartbeat_start "$name's own uninstaller"
+    if ( cd "$dir" && "$@" ); then heartbeat_stop; return 0; fi
+    heartbeat_stop
+    print_warning "$name's own uninstaller did not finish cleanly; the installer finishes the removal itself below."; return 1
+}
+official_with_answers() {   # command... : at a terminal the maker's uninstaller asks you its own questions; otherwise it is answered with yes
+    if remote_interactive; then "$@"; else yes y 2>/dev/null | "$@"; fi
+}
+official_yes() {   # command... : always answered with yes (crowsnest's uninstaller asks "(y/N)" and stops on its default otherwise)
+    yes y 2>/dev/null | "$@"
+}
+moonraker_drop_update_section() {   # name : remove [update_manager NAME] from moonraker.conf (copy kept), so Fluidd stops listing a removed add-on
+    rm_event conf "Cleaning up the settings"
+    local f="$HOME_DIR/printer_data/config/moonraker.conf"
+    [ -f "$f" ] || return 0
+    grep -qiE "^\[update_manager +$1\]" "$f" || return 0
+    cp "$f" "$f.wm-before-$1-removal-$STAMP"
+    python3 - "$f" "$1" <<'PY'
+import sys, re
+p, name = sys.argv[1], sys.argv[2].lower()
+out = []; skip = False
+for l in open(p).read().split("\n"):
+    m = re.match(r"\s*\[(.+?)\]", l)
+    if m: skip = m.group(1).strip().lower() == "update_manager " + name
+    if not skip: out.append(l)
+open(p, "w").write("\n".join(out))
+PY
+    print_info "Removed [update_manager $1] from moonraker.conf (copy: moonraker.conf.wm-before-$1-removal-$STAMP)"
+}
+do_screen_remove() {
+    print_header "Remove the touchscreen (KlipperScreen)"
+    load_answers || true
+    [ -d "$KS_DIR" ] || [ "$TESTING" = 1 ] || [ -f /etc/systemd/system/KlipperScreen.service ] || die_with_fix "KlipperScreen is not installed on this Pi." "nothing to remove."
+    echo "Removes the KlipperScreen service, ~/KlipperScreen and its Python environment. Klipper, Moonraker, Fluidd and the ZR Tools macros stay."
+    ask_yn "Continue?" n || exit 0
+    run_official_uninstall KlipperScreen "$KS_DIR" bash scripts/Uninstall.sh
+    SUDO systemctl stop KlipperScreen; SUDO systemctl disable KlipperScreen
+    SUDO rm -f /etc/systemd/system/KlipperScreen.service; SUDO systemctl daemon-reload
+    if [ "$DRY" != 1 ]; then
+        rm_path "$KS_DIR" "$HOME_DIR/.KlipperScreen-env"
+        moonraker_drop_update_section KlipperScreen
+        local f="$HOME_DIR/printer_data/config/KlipperScreen.conf"
+        [ -f "$f" ] && sed -i '/^\[menu __main zr_tools\]/,/^$/d' "$f"
+        WANT_SCREEN=macros; save_answers     # the ZR Tools macros stay in printer.cfg
+    fi
+    print_success "KlipperScreen removed. The ZR Tools macros and your settings file zr_screen.conf were kept. Add KlipperScreen again with: ./installer.sh --screen on --update"
+}
+
+do_screen_layout() {
+    print_header "Screen layout"
+    write_screen_conf
+    SUDO systemctl restart KlipperScreen
+    print_success "Layout set to $SCREEN_LAYOUT."
+}
+
+fetch_addon() {  # url sha dir : clone once, then pin to the version WonderMaker ships
+    local url="$1" sha="$2" dir="$3"
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would run: git clone $url $dir @ ${sha:0:7}${NC}"; return 0; }
+    if [ "$TESTING" = 1 ]; then mkdir -p "$dir/component" "$dir/klipper_macro"; echo "[test] fetch $url @ $sha" >> "$HOME_DIR/.sudo.log"; return 0; fi
+    [ -d "$dir/.git" ] || git clone -q "$url" "$dir" || return 1
+    git -C "$dir" checkout -q "$sha"
+}
+addon_pin() { grep "^$1|" "$SCRIPT_DIR/config/pins/addons.txt" | cut -d'|' -f2,3; }
+
+step_timelapse() {
+    [ "$WANT_TIMELAPSE" = 1 ] || return 0
+    print_header "Step 12: Moonraker timelapse"
+    why "WonderMaker's config includes timelapse.cfg and a [timelapse] section; the component and ffmpeg make them work."
+    SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
+    local pin url sha; pin="$(addon_pin moonraker-timelapse)"; url="${pin%|*}"; sha="${pin#*|}"
+    fetch_addon "$url" "$sha" "$HOME_DIR/moonraker-timelapse" || { warn_later "Could not download moonraker-timelapse (network?)."; return 0; }
+    run mkdir -p "$HOME_DIR/printer_data/timelapse" "$HOME_DIR/printer_data/frames" "$HOME_DIR/moonraker/moonraker/components"
+    [ "$DRY" = 1 ] || [ "$TESTING" = 1 ] || [ ! -d "$HOME_DIR/moonraker-timelapse/.git" ] || git -C "$HOME_DIR/moonraker-timelapse" checkout -q -B main "$sha"   # on branch main (not detached) so Moonraker's update manager can read the repo
+    local mc="$HOME_DIR/printer_data/config/moonraker.conf"
+    if [ "$DRY" != 1 ] && [ -f "$mc" ] && ! grep -qiE '^\[update_manager +timelapse\]' "$mc"; then
+        cp "$mc" "$mc.wm-before-timelapse-updatemgr-$STAMP"
+        printf '\n[update_manager timelapse]\ntype: git_repo\nprimary_branch: main\npath: ~/moonraker-timelapse\norigin: https://github.com/mainsail-crew/moonraker-timelapse.git\nmanaged_services: klipper moonraker\n' >> "$mc"
+        print_info "Added [update_manager timelapse] to moonraker.conf"
+    fi
+    if [ "$DRY" != 1 ] && [ -f "$mc" ] && ! grep -qiE '^\[timelapse\]' "$mc"; then   # without this section Moonraker does not load the timelapse part and every TIMELAPSE_TAKE_FRAME says "disabled"
+        cp "$mc" "$mc.wm-before-timelapse-section-$STAMP"
+        printf '\n[timelapse]\noutput_path: ~/printer_data/timelapse/\nframe_path: ~/printer_data/frames/\n' >> "$mc"
+        print_info "Added the [timelapse] section to moonraker.conf (timelapse is active)"
+    fi
+    [ -f "$HOME_DIR/moonraker/moonraker/components/timelapse.py" ] || run ln -sf "$HOME_DIR/moonraker-timelapse/component/timelapse.py" "$HOME_DIR/moonraker/moonraker/components/timelapse.py"
+    [ -f "$HOME_DIR/printer_data/config/timelapse.cfg" ] || run cp "$HOME_DIR/moonraker-timelapse/klipper_macro/timelapse.cfg" "$HOME_DIR/printer_data/config/timelapse.cfg"
+    record "HOMEDIR moonraker-timelapse"
+    print_success "Timelapse ready"
+}
+
+step_shellcmd() {   # Arksine's gcode_shell_command module (GPLv3), copied from config/. It does nothing until printer.cfg has a [gcode_shell_command name] section.
+    [ "$WANT_SHELLCMD" = 1 ] || return 0
+    print_header "Step 12b: Klipper gcode shell command"
+    why "Adds RUN_SHELL_COMMAND CMD=name. Each command is defined by you in printer.cfg as [gcode_shell_command name] with a command: line. Klipper loads it only after you restart Klipper."
+    local src="$SCRIPT_DIR/config/gcode_shell_command.py" dst="$HOME_DIR/klipper/klippy/extras/gcode_shell_command.py"
+    [ -f "$src" ] || { warn_later "gcode_shell_command.py is missing from this repository ($src)."; return 0; }
+    [ "$DRY" = 1 ] || [ -d "$HOME_DIR/klipper/klippy/extras" ] || { warn_later "~/klipper/klippy/extras not found: the shell command extension was not installed. Run ./installer.sh --update."; return 0; }
+    if [ "$DRY" != 1 ] && cmp -s "$src" "$dst" 2>/dev/null; then print_success "gcode_shell_command is already up to date"; return 0; fi
+    run cp "$src" "$dst"
+    record "FILE $dst"
+    print_success "gcode_shell_command installed. Add a section like this to printer.cfg, then restart Klipper:"
+    echo "      [gcode_shell_command hello]"
+    echo "      command: echo hello"
+    echo "      timeout: 2.0"
+    echo "      verbose: True"
+    echo "    and run it with:  RUN_SHELL_COMMAND CMD=hello   (extra words: PARAMS=\"a b\")"
+}
+
+# ---------------------------------------------------------------------------
+# Klippain Shake&Tune (Frix-x): input shaper and vibration graphs. The maker's install.sh restarts Klipper and Moonraker by itself (it would
+# start Klipper before the main board is connected, or interrupt a print), so the same steps are done here, without the restarts.
+# ---------------------------------------------------------------------------
+step_shaketune() {
+    [ "$WANT_SHAKETUNE" = 1 ] || return 0
+    print_header "Step 12f: Klippain Shake&Tune"
+    why "Adds Shake&Tune's graphs and commands (AXES_SHAPER_CALIBRATION, ...) to Klipper. WonderMaker's config already has the lis2dw accelerometer and [resonance_tester] it needs. Not yet tried on a WonderMaker printer."
+    local dir="$HOME_DIR/klippain_shaketune" ext="$HOME_DIR/klipper/klippy/extras/shaketune" cfgd="$HOME_DIR/printer_data/config" pin url sha
+    [ "$DRY" = 1 ] || [ -d "$HOME_DIR/klipper/klippy/extras" ] || { warn_later "Shake&Tune needs ~/klipper. Run ./installer.sh --update first."; return 0; }
+    [ "$DRY" = 1 ] || [ "$TESTING" = 1 ] || [ -x "$HOME_DIR/klippy-env/bin/pip" ] || { warn_later "Shake&Tune needs ~/klippy-env. Run ./installer.sh --repair."; return 0; }
+    if [ -L "$ext" ] && [ -d "$dir/.git" ] && [ "$DRY" != 1 ] && [ "$TESTING" != 1 ]; then print_success "Shake&Tune is already installed (update it from Fluidd's update manager)"; return 0; fi
+    pin="$(addon_pin shaketune)"; url="${pin%|*}"; sha="${pin#*|}"
+    SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y libopenblas-dev || { warn_later "libopenblas-dev could not be installed (network?). Shake&Tune was not installed."; return 0; }
+    fetch_addon "$url" "$sha" "$dir" || { warn_later "Could not download Shake&Tune (network?). Run ./installer.sh --update --shaketune on to retry."; return 0; }
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: pip install -r requirements.txt (in ~/klippy-env), link shaketune into klippy/extras, add shaketune.cfg and the update manager section${NC}"; return 0; fi
+    if [ "$TESTING" = 1 ]; then mkdir -p "$dir/shaketune"; echo "[test] shaketune pip install -r requirements.txt" >> "$HOME_DIR/.sudo.log"
+    else
+        "$HOME_DIR/klippy-env/bin/pip" install -q -r "$dir/requirements.txt" || { warn_later "Shake&Tune's Python packages did not install (numpy, matplotlib; this can need a few minutes and a network). Run ./installer.sh --update --shaketune on to retry."; return 0; }
+    fi
+    ln -frsn "$dir/shaketune" "$ext"
+    if [ "$TESTING" != 1 ] && ! module_imports shaketune; then
+        rm -f "$ext"
+        warn_later "Shake&Tune does not load in this Klipper (import failed), so it was NOT linked and Klipper is unchanged. Details: cd ~/klipper/klippy && ~/klippy-env/bin/python -c 'import sys; sys.path.insert(0, \".\"); import extras.shaketune'"
+        return 0
+    fi
+    record "HOMEDIR klippain_shaketune"
+    [ -f "$cfgd/shaketune.cfg" ] || printf '[shaketune]\n# result_folder: ~/printer_data/config/ShakeTune_results\n# number_of_results_to_keep: 10\n# keep_raw_data: False\n' > "$cfgd/shaketune.cfg"
+    if [ -f "$cfgd/printer.cfg" ] && ! grep -rqs '^\[shaketune\]\|include shaketune.cfg' "$cfgd/printer.cfg"; then
+        cp "$cfgd/printer.cfg" "$cfgd/printer.cfg.wm-before-shaketune-$STAMP"; cfg_include_last shaketune.cfg   # above the SAVE_CONFIG block, never under it
+        print_info "Added [include shaketune.cfg] to printer.cfg (copy: printer.cfg.wm-before-shaketune-$STAMP)"
+    fi
+    cfg_below_save_fix   # an older version of this installer appended the include under the SAVE_CONFIG block
+    if [ -f "$cfgd/moonraker.conf" ] && ! grep -q '\[update_manager[a-z ]* Klippain-ShakeTune\]' "$cfgd/moonraker.conf"; then
+        printf '\n## Klippain Shake&Tune automatic update management\n[update_manager Klippain-ShakeTune]\ntype: git_repo\norigin: https://github.com/Frix-x/klippain-shaketune.git\npath: ~/klippain_shaketune\nvirtualenv: %s/klippy-env\nrequirements: requirements.txt\nsystem_dependencies: system-dependencies.json\nprimary_branch: main\nmanaged_services: klipper\n' "$HOME_DIR" >> "$cfgd/moonraker.conf"
+    fi
+    grep -rqs --exclude-dir=backup '^\[resonance_tester\]' "$cfgd" || warn_later "Shake&Tune needs [resonance_tester] and an accelerometer (lis2dw or adxl345) in your Klipper config; none was found in ~/printer_data/config."
+    print_success "Shake&Tune installed. Restart Klipper from Fluidd (config reload) to load it, then run for example: AXES_SHAPER_CALIBRATION (see github.com/Frix-x/klippain-shaketune). Graphs go to ~/printer_data/config/ShakeTune_results."
+}
+
+# ---------------------------------------------------------------------------
+# Remote access add-ons: Obico, OctoApp, OctoEverywhere. Each is the maker's own project, cloned into ~ and installed with
+# the maker's own installer, pointed at WonderMaker's Moonraker (127.0.0.1:7125, ~/printer_data/config/moonraker.conf, moonraker.service).
+# Linking to your account always needs you (a code or a link shown on screen), so that last step is left to you.
+# ---------------------------------------------------------------------------
+remote_interactive() { [ "${WM_ASSUME_YES:-0}" != 1 ] && [ -t 0 ] && [ -t 1 ] && [ "$TESTING" != 1 ]; }
+remote_moonraker_port() { local p; p="$(awk -F'[: ]+' '/^\[server\]/{s=1;next} /^\[/{s=0} s&&$1=="port"{print $2; exit}' "$HOME_DIR/printer_data/config/moonraker.conf" 2>/dev/null)"; echo "${p:-7125}"; }
+
+remote_clone() {   # url dir : clone once; later runs only fast-forward
+    local url="$1" dir="$2"
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would run: git clone $url $dir${NC}"; return 0; }
+    if [ "$TESTING" = 1 ]; then mkdir -p "$dir"; : > "$dir/install.sh"; echo "[test] clone $url" >> "$HOME_DIR/.sudo.log"; return 0; fi
+    if [ -d "$dir/.git" ]; then git -C "$dir" pull -q --ff-only 2>/dev/null || print_warning "Could not update $dir (kept as it is)."; return 0; fi
+    git clone -q "$url" "$dir"
+}
+
+remote_precheck() {   # the facts these add-ons need from WonderMaker's Moonraker; returns 1 and says why when something is missing
+    local conf="$HOME_DIR/printer_data/config/moonraker.conf" ok=0
+    [ "$DRY" = 1 ] && return 0
+    [ -f "$conf" ] || { warn_later "Remote access add-ons need $conf. Run ./installer.sh first."; ok=1; }
+    [ "$TESTING" = 1 ] || [ -f /etc/systemd/system/moonraker.service ] || { warn_later "Remote access add-ons need /etc/systemd/system/moonraker.service. Run ./installer.sh --repair."; ok=1; }
+    command -v git >/dev/null 2>&1 || [ "$TESTING" = 1 ] || { warn_later "git is missing: sudo apt-get install git"; ok=1; }
+    grep -q '^\[authorization\]' "$conf" 2>/dev/null && ! grep -q '127\.0\.0\.' "$conf" && print_warning "moonraker.conf has an [authorization] section without 127.0.0.0/8 in trusted_clients: the add-ons connect from this Pi and may be refused."
+    return $ok
+}
+
+remote_note_update_manager() {
+    print_info "The add-on adds an [update_manager ...] section to moonraker.conf so Fluidd can update it. Fluidd may then also list Klipper and Moonraker as not updatable (they are not git clones here): do not press update on those two; use ./installer.sh --update."
+}
+
+step_obico() {
+    [ "$WANT_OBICO" = 1 ] || return 0
+    print_header "Step 12c: Obico for Klipper"
+    why "Obico's own installer (git clone + ./install.sh, as on its wiki) is run as it is. It asks you itself which Obico to use (app.obico.io or your own server) and links the printer."
+    remote_precheck || return 0
+    local dir="$HOME_DIR/moonraker-obico" conf="$HOME_DIR/printer_data/config"
+    remote_clone https://github.com/TheSpaghettiDetective/moonraker-obico.git "$dir" || { warn_later "Could not download moonraker-obico (network?)."; return 0; }
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: cd $dir && ./install.sh${NC}"; return 0
+    elif [ "$TESTING" = 1 ]; then echo "[test] obico install.sh" >> "$HOME_DIR/.sudo.log"
+    elif remote_interactive; then
+        [ -f "$conf/printer.cfg" ] && cp "$conf/printer.cfg" "$conf/printer.cfg.wm-before-obico-$STAMP" && print_info "Obico adds one include line to printer.cfg. A copy was saved as printer.cfg.wm-before-obico-$STAMP"
+        echo "  Obico's installer asks its own questions (including which server to use); answer them on screen."
+        ( cd "$dir" && bash ./install.sh ) || { warn_later "The Obico installer did not finish. Run it again: cd ~/moonraker-obico && ./install.sh"; return 0; }
+    else
+        print_info "Obico's installer asks questions, so it was not started. It is downloaded; finish it in a terminal:"
+        echo "      cd ~/moonraker-obico && ./install.sh"
+        return 0
+    fi
+    record "HOMEDIR moonraker-obico"
+    remote_note_update_manager
+    print_success "Obico installed. Then restart Klipper from Fluidd (it adds moonraker_obico_macros.cfg to printer.cfg)."
+}
+
+step_octoapp() {
+    [ "$WANT_OCTOAPP" = 1 ] || return 0
+    print_header "Step 12d: OctoApp"
+    why "OctoApp's own installer (method 1c on its wiki: git clone + ./install.sh) is pointed at this Pi's Moonraker. It creates ~/octoapp, ~/octoapp-env and the octoapp service."
+    remote_precheck || return 0
+    local dir="$HOME_DIR/octoapp" conf="$HOME_DIR/printer_data/config/moonraker.conf"
+    remote_clone https://github.com/crysxd/OctoApp-Plugin.git "$dir" || { warn_later "Could not download OctoApp (network?)."; return 0; }
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: $dir/install.sh $conf moonraker.service${NC}"; return 0
+    elif [ "$TESTING" = 1 ]; then echo "[test] octoapp install.sh $conf moonraker.service" >> "$HOME_DIR/.sudo.log"
+    elif remote_interactive; then
+        echo "  OctoApp's installer asks a few questions; answer them on screen."
+        ( cd "$dir" && bash ./install.sh "$conf" moonraker.service ) || { warn_later "The OctoApp installer did not finish. Run it again: cd ~/octoapp && ./install.sh $conf moonraker.service"; return 0; }
+    else
+        print_info "OctoApp's installer asks questions, so it was not started. It is downloaded; finish it in a terminal:"
+        echo "      cd ~/octoapp && ./install.sh $conf moonraker.service"
+        return 0
+    fi
+    record "HOMEDIR octoapp"; record "HOMEDIR octoapp-env"
+    remote_note_update_manager
+    print_success "OctoApp installed. Open the OctoApp phone app on the same network; it registers by itself."
+}
+
+step_octoeverywhere() {
+    [ "$WANT_OCTOEVERYWHERE" = 1 ] || return 0
+    print_header "Step 12e: OctoEverywhere"
+    why "OctoEverywhere's own installer is pointed at this Pi's Moonraker. It creates ~/octoeverywhere, ~/octoeverywhere-env and the octoeverywhere service, then prints a link to connect it to your free account."
+    remote_precheck || return 0
+    local dir="$HOME_DIR/octoeverywhere" conf="$HOME_DIR/printer_data/config/moonraker.conf"
+    remote_clone https://github.com/QuinnDamerell/OctoPrint-OctoEverywhere.git "$dir" || { warn_later "Could not download OctoEverywhere (network?)."; return 0; }
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: $dir/install.sh $conf moonraker.service${NC}"; return 0
+    elif [ "$TESTING" = 1 ]; then echo "[test] octoeverywhere install.sh $conf moonraker.service" >> "$HOME_DIR/.sudo.log"
+    elif remote_interactive; then
+        echo "  OctoEverywhere's installer asks a few questions and shows a link for your account; follow it on screen."
+        ( cd "$dir" && bash ./install.sh "$conf" moonraker.service ) || { warn_later "The OctoEverywhere installer did not finish. Run it again: cd ~/octoeverywhere && ./install.sh $conf moonraker.service"; return 0; }
+    else
+        print_info "OctoEverywhere's installer asks questions, so it was not started. It is downloaded; finish it in a terminal:"
+        echo "      cd ~/octoeverywhere && ./install.sh $conf moonraker.service"
+        return 0
+    fi
+    record "HOMEDIR octoeverywhere"; record "HOMEDIR octoeverywhere-env"
+    remote_note_update_manager
+    print_success "OctoEverywhere installed. Open the link it printed to connect your account."
+}
+
+# ---------------------------------------------------------------------------
+# Spoolman (Donkie): filament spool tracking. Fluidd shows it once Moonraker has a [spoolman] section.
+# Same steps as KIAUH: download the release's spoolman.zip, unzip to ~/Spoolman, run its scripts/install.sh (venv, service), then connect Moonraker.
+# ---------------------------------------------------------------------------
+moonraker_drop_section() {   # name : remove the plain [NAME] section from moonraker.conf (copy kept)
+    rm_event conf "Cleaning up the settings"
+    local f="$HOME_DIR/printer_data/config/moonraker.conf"
+    [ -f "$f" ] || return 0
+    grep -qiE "^\[$1\]" "$f" || return 0
+    cp "$f" "$f.wm-before-$1-removal-$STAMP"
+    python3 - "$f" "$1" <<'PY'
+import sys, re
+p, name = sys.argv[1], sys.argv[2].lower()
+out = []; skip = False
+for l in open(p).read().split("\n"):
+    m = re.match(r"\s*\[(.+?)\]", l)
+    if m: skip = m.group(1).strip().lower() == name
+    if not skip: out.append(l)
+open(p, "w").write("\n".join(out))
+PY
+}
+step_spoolman() {
+    [ "$WANT_SPOOLMAN" = 1 ] || return 0
+    print_header "Step 12g: Spoolman"
+    why "Spoolman keeps track of your filament spools (weight left, brand, colour). Fluidd shows it in its spool panel once Moonraker is connected to it. It runs as its own service on port 7912 and keeps its own database."
+    local dir="$HOME_DIR/Spoolman" conf="$HOME_DIR/printer_data/config/moonraker.conf" asvc="$HOME_DIR/printer_data/moonraker.asvc" url tag zip="/tmp/spoolman-$STAMP.zip"
+    remote_precheck || return 0
+    if [ -d "$dir" ] && [ "$DRY" != 1 ]; then print_success "Spoolman is already installed (update it from Fluidd's update manager)"; return 0; fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: download Spoolman's release (spoolman.zip) to ~/Spoolman, then ./scripts/install.sh, then add [spoolman] and its update entry to moonraker.conf${NC}"; return 0; fi
+    SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y unzip curl python3-venv python3-pip || { warn_later "Spoolman's system packages could not be installed (network?). Run ./installer.sh --update --spoolman on to retry."; return 0; }
+    if [ "$TESTING" = 1 ]; then mkdir -p "$dir/scripts" "$dir/.venv"; echo "[test] spoolman install.sh" >> "$HOME_DIR/.sudo.log"; tag=test
+    else
+        local rel; rel="$(curl -fsSL -m 30 https://api.github.com/repos/Donkie/Spoolman/releases/latest)" || { warn_later "Could not reach GitHub to find Spoolman's latest release (network?). Run ./installer.sh --update --spoolman on to retry."; return 0; }
+        url="$(echo "$rel" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a["name"]=="spoolman.zip"),""))')"
+        tag="$(echo "$rel" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))')"
+        [ -n "$url" ] || { warn_later "Spoolman's latest release has no spoolman.zip. Install it by hand: github.com/Donkie/Spoolman/wiki/Installation"; return 0; }
+        curl -fsSL -m 300 "$url" -o "$zip" || { warn_later "Spoolman could not be downloaded."; rm -f "$zip"; return 0; }
+        mkdir -p "$dir" && unzip -q -o "$zip" -d "$dir"; rm -f "$zip"
+        [ -f "$dir/scripts/install.sh" ] || { warn_later "Spoolman's download is missing scripts/install.sh. ~/Spoolman was left as it is."; return 0; }
+        ( cd "$dir" && bash ./scripts/install.sh ) || { warn_later "Spoolman's installer failed (see the output above). Run it again: cd ~/Spoolman && ./scripts/install.sh"; return 0; }
+    fi
+    record "HOMEDIR Spoolman"
+    if [ -f "$conf" ]; then
+        if ! grep -qE '^\[spoolman\]' "$conf"; then
+            cp "$conf" "$conf.wm-before-spoolman-$STAMP"
+            printf '\n[spoolman]\nserver: http://127.0.0.1:7912\nsync_rate: 5\n' >> "$conf"
+        fi
+        if ! grep -qiE '^\[update_manager +Spoolman\]' "$conf"; then
+            printf '\n[update_manager Spoolman]\ntype: zip\nchannel: stable\nrepo: Donkie/Spoolman\npath: %s\nvirtualenv: .venv\nrequirements: requirements.txt\npersistent_files:\n  .venv\n  .env\nmanaged_services: Spoolman\n' "$dir" >> "$conf"
+        fi
+    fi
+    if [ -f "$asvc" ] && ! grep -qx Spoolman "$asvc"; then [ -n "$(tail -c1 "$asvc")" ] && echo >> "$asvc"; echo Spoolman >> "$asvc"; fi
+    print_success "Spoolman ${tag:+$tag }installed. Open http://$(hostname -I 2>/dev/null | awk '{print $1}'):7912 to add spools; Fluidd lists them after Moonraker restarts."
+}
+
+# ---------------------------------------------------------------------------
+# Anycubic ACE Pro (feeder and dryer). Its Klipper driver and config belong to another project, wm-ultra-fluidd-acepro-panel
+# (the same one that makes the Fluidd Toolheads panel). That project has its own installer, so this runs it with its default
+# answers (ACE Pro yes, load spools automatically, endless-spool macros, no Klipper restart: this installer does that).
+# The driver is linked into Klipper from the downloaded folder, so ~/wm-ultra-fluidd-acepro-panel must stay.
+# ---------------------------------------------------------------------------
+ACE_REPO_URL="https://github.com/ducati1198/wm-ultra-fluidd-acepro-panel"
+ace_dir() { echo "$HOME_DIR/wm-ultra-fluidd-acepro-panel"; }
+ace_cfg_files="rpi_ace_driver.cfg rpi_ace.cfg rpi_endless.cfg rpi_stats.cfg"
+ace_run_installer() {   # MODE [ANSWERS fed to its questions; none = its defaults]
+    ( cd "$(ace_dir)" && printf '%b' "${2:-}" | ACE_INSTALL_HOME="$HOME_DIR" ACE_KLIPPER_DIR="$HOME_DIR/klipper" ACE_CONFIG_DIR="$HOME_DIR/printer_data/config" ACE_INSTALLER_TEST="$TESTING" bash ./installer.sh "$1" )
+}
+ace_installed() { [ -f "$HOME_DIR/printer_data/config/rpi_ace.cfg" ] && grep -qE '^[[:space:]]*\[include[[:space:]]+rpi_ace\.cfg\]' "$HOME_DIR/printer_data/config/printer.cfg" 2>/dev/null; }
+step_acepro() {
+    [ "$WANT_ACEPRO" = 1 ] || return 0
+    print_header "Step 12h: Anycubic ACE Pro"
+    why "Adds the ACE Pro driver for Klipper and its config files (rpi_ace_driver.cfg, rpi_ace.cfg, rpi_endless.cfg, rpi_stats.cfg). They come from the project wm-ultra-fluidd-acepro-panel, by running its own installer. Klipper loads the driver after it restarts. The ACE Pro is only used to load, unload and dry filament (the four toolheads do the switching)."
+    local dir cfgd="$HOME_DIR/printer_data/config" mode=--install; dir="$(ace_dir)"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: download $ACE_REPO_URL to ~/wm-ultra-fluidd-acepro-panel (or update it), then run its installer.sh with the default answers${NC}"; return 0; fi
+    [ -d "$HOME_DIR/klipper/klippy/extras" ] && [ -f "$cfgd/printer.cfg" ] || { warn_later "ACE Pro: Klipper or printer.cfg is not there yet. Run ./installer.sh --update --acepro on once they are."; return 0; }
+    if [ "$TESTING" = 1 ]; then
+        [ -d "$dir" ] || { [ -n "${WM_TEST_ACEPRO_SRC:-}" ] && [ -d "$WM_TEST_ACEPRO_SRC" ] && cp -a "$WM_TEST_ACEPRO_SRC" "$dir"; } || { warn_later "ACE Pro: could not get the project (test)."; return 0; }
+    elif [ -d "$dir/.git" ]; then git -C "$dir" pull -q --ff-only || print_warning "Could not update ~/wm-ultra-fluidd-acepro-panel (network?). Using the copy that is there."
+    elif [ ! -e "$dir" ]; then git clone -q --depth 1 "$ACE_REPO_URL" "$dir" || { warn_later "ACE Pro: could not download $ACE_REPO_URL (network?). Run ./installer.sh --update --acepro on to retry."; return 0; }
+    else warn_later "ACE Pro: $dir exists but is not a git copy. Move it away and run ./installer.sh --update --acepro on."; return 0; fi
+    [ -f "$dir/installer.sh" ] || { warn_later "ACE Pro: $dir has no installer.sh."; return 0; }
+    record "HOMEDIR wm-ultra-fluidd-acepro-panel"
+    [ -f "$cfgd/rpi-ultra-install.conf" ] && mode=--update
+    if ace_run_installer "$mode" && ace_installed; then
+        tr -d '[:space:]' < "$dir/VERSION" > "$BACKUP_ROOT/panel.version" 2>/dev/null   # what scripts/pi_update.sh --panel compares with
+        print_success "ACE Pro driver and config are installed. Klipper loads them at its next restart; plug the ACE Pro into a USB port of the Pi."
+    else warn_later "ACE Pro: the project's installer did not finish. Run it yourself and read its messages: cd ~/wm-ultra-fluidd-acepro-panel && ./installer.sh"; fi
+}
+
+installer_update_block() {   # the [update_manager] section of this installer: the Update button downloads it, wm-pi-update.path applies it
+    printf '[update_manager WM_Ultra_Vanilla_Klipper]\ntype: git_repo\npath: %s\norigin: https://github.com/ducati1198/WM_Ultra_Vanilla_Klipper.git\nprimary_branch: main\nis_system_service: False\ninfo_tags:\n  desc=WonderMaker Ultra vanilla Klipper Pi installer. The Update button downloads the new installer and applies it (like ./installer.sh --update, log: ~/wm-pi-update.log)\n' "$REPO_DIR"
+}
+moonraker_add_update_entries() {   # [update_manager ...] for this installer's repo and the ACE Pro panel repo, so Fluidd shows when GitHub has a newer version
+    local conf="$HOME_DIR/printer_data/config/moonraker.conf" added=""
+    [ -f "$conf" ] || return 0
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would add [update_manager WM_Ultra_Vanilla_Klipper] (and the ACE Pro panel) to moonraker.conf so Fluidd shows new versions${NC}"; return 0; fi
+    if [ -d "$REPO_DIR/.git" ]; then
+        local want have; want="$(installer_update_block)"
+        have="$(python3 - "$conf" <<'PY'
+import sys, re
+out = []; take = False
+for l in open(sys.argv[1]).read().split("\n"):
+    m = re.match(r"\s*\[(.+?)\]", l)
+    if m: take = m.group(1).strip().lower() == "update_manager wm_ultra_vanilla_klipper"
+    if take and l.strip(): out.append(l)
+print("\n".join(out))
+PY
+)"
+        if [ "$have" != "$(echo "$want" | sed '/^$/d')" ]; then
+            if [ -n "$have" ]; then moonraker_drop_update_section WM_Ultra_Vanilla_Klipper >/dev/null; added="WM_Ultra_Vanilla_Klipper (description refreshed)"
+            else cp "$conf" "$conf.wm-before-updatemgr-$STAMP"; added="WM_Ultra_Vanilla_Klipper"; fi
+            printf '\n%s' "$want" >> "$conf"
+            MOONRAKER_CHANGED=1
+        fi
+    fi
+    if [ "$WANT_ACEPRO" = 1 ] && [ -d "$(ace_dir)/.git" ] && ! grep -qiE '^\[update_manager +wm-ultra-fluidd-acepro-panel\]' "$conf"; then
+        [ -e "$conf.wm-before-updatemgr-$STAMP" ] || cp "$conf" "$conf.wm-before-updatemgr-$STAMP"
+        printf '\n[update_manager wm-ultra-fluidd-acepro-panel]\ntype: git_repo\npath: %s\norigin: %s.git\nprimary_branch: main\nis_system_service: False\nmanaged_services: klipper\ninfo_tags:\n  desc=Anycubic ACE Pro driver and Fluidd panel (the Update button downloads it and the Pi applies it: backup, install, Klipper restart; log: ~/wm-pi-update.log)\n' "$(ace_dir)" "$ACE_REPO_URL" >> "$conf"
+        added="${added:+$added, }wm-ultra-fluidd-acepro-panel"
+    fi
+    [ -z "$added" ] || print_info "Added to moonraker.conf: [update_manager $added]. Fluidd now shows when GitHub has a newer version. Its Update button downloads the files; for this installer they are applied by the wm-pi-update service (like ./installer.sh --update), for the ACE Pro panel run ./installer.sh --update afterwards."
+}
+
+step_pi_updater() {   # Fluidd's Update button for this installer: Moonraker only does "git pull"; wm-pi-update.path sees the new commit and wm-pi-update.service runs scripts/pi_update.sh (installer --update --yes)
+    [ -d "$REPO_DIR/.git" ] && [ -f "$REPO_DIR/scripts/pi_update.sh" ] || return 0
+    local user; user="$(id -un)"
+    local pth svc; pth="$(mktemp)"; svc="$(mktemp)"
+    printf '[Unit]\nDescription=Apply the WM Ultra installer update after Fluidd downloaded it\n\n[Path]\nPathModified=%s/.git/logs/HEAD\nUnit=wm-pi-update.service\n\n[Install]\nWantedBy=multi-user.target\n' "$REPO_DIR" > "$pth"
+    printf '[Unit]\nDescription=WM Ultra installer: apply an update that Fluidd downloaded (log: ~/wm-pi-update.log)\n\n[Service]\nType=oneshot\nUser=%s\nEnvironment=HOME=%s\nWorkingDirectory=%s\nExecStart=/bin/bash %s/scripts/pi_update.sh\n' "$user" "$HOME_DIR" "$REPO_DIR" "$REPO_DIR" > "$svc"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would install wm-pi-update.path and wm-pi-update.service (the Fluidd Update button applies the new installer)${NC}"; rm -f "$pth" "$svc"; return 0; fi
+    if [ "$TESTING" = 1 ]; then mkdir -p "$HOME_DIR/.wm-units"; cp "$pth" "$HOME_DIR/.wm-units/wm-pi-update.path"; cp "$svc" "$HOME_DIR/.wm-units/wm-pi-update.service"; fi
+    chmod +x "$REPO_DIR/scripts/pi_update.sh" 2>/dev/null
+    if ! cmp -s "$pth" /etc/systemd/system/wm-pi-update.path 2>/dev/null || ! cmp -s "$svc" /etc/systemd/system/wm-pi-update.service 2>/dev/null || [ "$TESTING" = 1 ]; then
+        SUDO install -m 644 "$pth" /etc/systemd/system/wm-pi-update.path
+        SUDO install -m 644 "$svc" /etc/systemd/system/wm-pi-update.service
+        record "FILE /etc/systemd/system/wm-pi-update.path"; record "FILE /etc/systemd/system/wm-pi-update.service"
+        SUDO systemctl daemon-reload
+    fi
+    SUDO systemctl enable --now wm-pi-update.path
+    rm -f "$pth" "$svc"
+    print_success "Fluidd's Update button for this installer now also applies the update (wm-pi-update service; log: ~/wm-pi-update.log)"
+}
+step_panel_updater() {   # Fluidd's Update button for the panel project: Moonraker only does "git pull"; wm-panel-update.path sees it and runs scripts/pi_update.sh --panel
+    local pd; pd="$(ace_dir)"
+    [ -d "$pd/.git" ] && [ -d "$REPO_DIR/.git" ] && [ -f "$REPO_DIR/scripts/pi_update.sh" ] || return 0
+    local user; user="$(id -un)"
+    local pth svc; pth="$(mktemp)"; svc="$(mktemp)"
+    printf '[Unit]\nDescription=Apply the Fluidd panel (ACE Pro) update after Fluidd downloaded it\n\n[Path]\nPathModified=%s/.git/logs/HEAD\nUnit=wm-panel-update.service\n\n[Install]\nWantedBy=multi-user.target\n' "$pd" > "$pth"
+    printf '[Unit]\nDescription=WM Ultra installer: apply a Fluidd panel update that Fluidd downloaded (log: ~/wm-pi-update.log)\n\n[Service]\nType=oneshot\nUser=%s\nEnvironment=HOME=%s\nWorkingDirectory=%s\nExecStart=/bin/bash %s/scripts/pi_update.sh --panel\n' "$user" "$HOME_DIR" "$REPO_DIR" "$REPO_DIR" > "$svc"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would install wm-panel-update.path and wm-panel-update.service (the Fluidd Update button for the panel applies the new version)${NC}"; rm -f "$pth" "$svc"; return 0; fi
+    if [ "$TESTING" = 1 ]; then mkdir -p "$HOME_DIR/.wm-units"; cp "$pth" "$HOME_DIR/.wm-units/wm-panel-update.path"; cp "$svc" "$HOME_DIR/.wm-units/wm-panel-update.service"; fi
+    if ! cmp -s "$pth" /etc/systemd/system/wm-panel-update.path 2>/dev/null || ! cmp -s "$svc" /etc/systemd/system/wm-panel-update.service 2>/dev/null || [ "$TESTING" = 1 ]; then
+        SUDO install -m 644 "$pth" /etc/systemd/system/wm-panel-update.path
+        SUDO install -m 644 "$svc" /etc/systemd/system/wm-panel-update.service
+        record "FILE /etc/systemd/system/wm-panel-update.path"; record "FILE /etc/systemd/system/wm-panel-update.service"
+        SUDO systemctl daemon-reload
+    fi
+    SUDO systemctl enable --now wm-panel-update.path
+    rm -f "$pth" "$svc"
+    print_success "Fluidd's Update button for the Fluidd panel now also applies the update (wm-panel-update service; log: ~/wm-pi-update.log)"
+}
+step_remote() { step_obico; step_octoapp; step_octoeverywhere; }
+upd_wants() { [ -z "$ONLY_ADDON" ] || [ "$ONLY_ADDON" = "$1" ]; }   # --update --only-addon NAME runs just that add-on
+step_remote_update() {   # --update: never run the makers' installers again for something already there (Fluidd's update manager updates them)
+    local pair name var dir
+    for pair in "obico:WANT_OBICO:moonraker-obico" "octoapp:WANT_OCTOAPP:octoapp" "octoeverywhere:WANT_OCTOEVERYWHERE:octoeverywhere"; do
+        IFS=: read -r name var dir <<< "$pair"
+        [ "${!var}" = 1 ] || continue
+        upd_wants "$name" || continue
+        if [ -d "$HOME_DIR/$dir" ]; then
+            print_success "$name is already installed (update it from Fluidd's update manager, or: cd ~/$dir && git pull)"
+        else "step_${name}"; fi
+    done
+}
+
+camera_present() { if [ "$TESTING" = 1 ]; then [ "${WM_TEST_CAMERA:-0}" = 1 ]; else ls /dev/v4l/by-id/*index0 >/dev/null 2>&1; fi; }
+crowsnest_follow_camera() {   # started only when a camera is plugged in
+    if camera_present; then SUDO systemctl enable crowsnest; SUDO systemctl restart crowsnest; return 0; fi
+    SUDO systemctl stop crowsnest; SUDO systemctl disable crowsnest; return 1
+}
+cam_py() { echo "$SCRIPT_DIR/scripts/wm_crowsnest.py"; }
+cam_ask() {   # cam_ask "question" default check_cmd -> sets CAM_ANSWER; asks again until check_cmd accepts it. WM_ASSUME_YES: the default.
+    local q="$1" d="$2" chk="$3" a v
+    if [ "${WM_ASSUME_YES:-0}" = 1 ]; then CAM_ANSWER="$d"; return 0; fi
+    while :; do
+        read -r -p "$(echo -e "${YELLOW}?${NC} $q [${d}] ")" a || a=""
+        a="${a:-$d}"
+        v="$(python3 -I "$(cam_py)" $chk "$a" ${CAM_CHK_EXTRA:-} 2>&1)" && { CAM_ANSWER="$v"; return 0; }
+        print_warning "${v#wm_crowsnest: }"
+    done
+}
+screen_cam_json() {   # where the screen board's announcement is; a reinstall moves the old printer_data aside, so the newest saved copy is brought back
+    local f="$HOME_DIR/printer_data/config/rpi_screen_camera.json" old
+    if [ ! -f "$f" ] && [ -d "$HOME_DIR/printer_data/config" ]; then
+        old="$(ls -d "$HOME_DIR"/wm-rpi-backup/old-*/printer_data/config/rpi_screen_camera.json 2>/dev/null | sort | tail -1)"
+        [ -n "$old" ] && [ "$DRY" != 1 ] && cp -p "$old" "$f" 2>/dev/null
+    fi
+    echo "$f"
+}
+screen_cam_url() { [ -f "$(cam_py)" ] && python3 -I "$(cam_py)" screencam "$(screen_cam_json)" 2>/dev/null; }
+screen_cam_on() { [ "${SCREEN_CAM:-}" = yes ]; }
+screen_cam_decide() {   # is the factory camera plugged into the factory screen board? (asked once; the board announces its camera in rpi_screen_camera.json)
+    local url; url="$(screen_cam_url)"
+    case "${SCREEN_CAM:-}" in
+        no) return 0 ;;
+        yes) [ -n "$url" ] || { print_warning "No screen board has announced a camera yet (rpi_screen_camera.json is not in the config folder), so the screen camera is not set up now. Plug the camera into the board, run on the board: bash ~/WM_Ultra_Vanilla_Klipper/scripts/screen_board.sh --camera   then here: ./installer.sh --webcam-setup"; SCREEN_CAM=no; }; return 0 ;;
+    esac
+    if [ -z "$url" ]; then SCREEN_CAM=no; return 0; fi
+    print_info "The screen board announced a camera at $url."
+    why "The factory camera plugs into the factory screen board, and the board streams it itself (720p, 30 fps). If you answer yes, Fluidd shows it as Camera (nginx on this Pi passes it on as /webcam/) and the cameras plugged into this Pi become Camera 2, Camera 3 and Camera 4. Answer no if you wired the factory camera to this Pi instead (it is then one of this Pi's cameras)."
+    if [ "${WM_ASSUME_YES:-0}" = 1 ]; then SCREEN_CAM=yes
+    elif ask_yn "Is the factory camera plugged into the factory screen board (the camera the board announced)?" y; then SCREEN_CAM=yes; else SCREEN_CAM=no; fi
+}
+screen_cam_first() { screen_cam_on && echo 2 || echo 1; }   # number of the first camera of this Pi
+screen_cam_nginx() {    # nginx /webcam/ goes to the screen board camera (yes) or back to this Pi (no); idempotent, reloads nginx only when it changed
+    local py up="${WM_NGINX_UPSTREAMS:-/etc/nginx/conf.d/upstreams.conf}" url rc
+    py="$(cam_py)"; [ -f "$py" ] || return 0
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would point nginx /webcam/ at the screen board camera (screen camera: ${SCREEN_CAM:-no})${NC}"; return 0; fi
+    [ -f "$up" ] || return 0
+    if screen_cam_on; then url="$(screen_cam_url)"; [ -n "$url" ] || return 0; else url=default; fi
+    python3 -I "$py" upstream "$up" "$url" >/dev/null; rc=$?
+    if [ "$rc" = 10 ]; then
+        if [ -w "$up" ] || [ "$TESTING" = 1 ]; then python3 -I "$py" upstream "$up" "$url" --write >/dev/null
+        else SUDO cp "$up" "$up.wm-tmp" && python3 -I "$py" upstream "$up.wm-tmp" "$url" --write >/dev/null && SUDO mv "$up.wm-tmp" "$up"; fi
+        SUDO nginx -t >/dev/null 2>&1 && SUDO systemctl reload nginx
+        if screen_cam_on; then print_success "nginx: /webcam/ now shows the screen board camera ($url)"; else print_success "nginx: /webcam/ shows this Pi's first camera again"; fi
+    fi
+}
+screen_camera_apply() {   # after the answers: nginx, then the cameras Fluidd lists (Camera = screen board, Camera 2.. = this Pi)
+    if screen_cam_on && [ "$DRY" != 1 ] && grep -Eq '^port:[[:space:]]*8080' "$HOME_DIR/printer_data/config/crowsnest.conf" 2>/dev/null; then
+        print_warning "Your crowsnest.conf has a camera on port 8080, but /webcam/ now shows the screen board camera. Give that camera port 8081 (it becomes Camera 2) or run ./installer.sh --webcam-setup."
+    fi
+    screen_cam_nginx
+    moonraker_webcams
+}
+camera_questions() {   # how many cameras, picture size, speed. An existing crowsnest.conf is never touched: no questions then (use --webcam-setup)
+    local py conf="$HOME_DIR/printer_data/config/crowsnest.conf" found def v r
+    py="$(cam_py)"; [ -f "$py" ] || return 0
+    screen_cam_decide
+    if [ -f "$conf" ] && [ "$MODE" != webcamsetup ]; then
+        print_info "crowsnest.conf already exists, so it is kept as it is. A new explained copy is saved next to it as crowsnest.conf.new. To answer the camera questions again: ./installer.sh --webcam-setup"
+        return 0
+    fi
+    # values given on the command line are checked now
+    local cmax=4 cmin=1; if screen_cam_on; then cmax=3; cmin=0; fi
+    [ -z "$CAM_COUNT" ] || CAM_COUNT="$(python3 -I "$py" count "$CAM_COUNT" --min $cmin --max $cmax 2>&1)" || die_with_fix "--cameras: ${CAM_COUNT#wm_crowsnest: }" "use a number from $cmin to $cmax."
+    [ -z "$CAM_RES" ] || CAM_RES="$(python3 -I "$py" resolution "$CAM_RES" 2>&1)" || die_with_fix "--cam-resolution: ${CAM_RES#wm_crowsnest: }" "use 480p, 720p, 1080p or WIDTHxHEIGHT."
+    [ -z "$CAM_FPS" ] || CAM_FPS="$(python3 -I "$py" fps "$CAM_FPS" 2>&1)" || die_with_fix "--cam-fps: ${CAM_FPS#wm_crowsnest: }" "use a number from 1 to 60."
+    [ -z "$CAM_MODE" ] || CAM_MODE="$(python3 -I "$py" streamer "$CAM_MODE" 2>&1)" || die_with_fix "--cam-mode: ${CAM_MODE#wm_crowsnest: }" "use ustreamer, camera-streamer or spyglass."
+    [ -n "$CAM_COUNT" ] && [ -n "$CAM_RES" ] && [ -n "$CAM_FPS" ] && [ -n "$CAM_MODE" ] && return 0
+    print_header "Webcams (crowsnest)"
+    why "ustreamer is the default streamer. camera-streamer uses the Pi hardware (USB and the ribbon camera, not on a Pi 5), spyglass is for the ribbon camera on a Pi 5. A ribbon camera always gets camera-streamer or spyglass. Every option stays editable in crowsnest.conf, which explains each one."
+    found="$(python3 -I "$py" detect)"; echo "  Cameras found:"; echo "$found" | sed 's/^/    /'
+    def="$(python3 -I "$py" detect --count)"; [ "${def:-0}" -ge "$cmin" ] 2>/dev/null || def=$cmin; [ "$def" -le "$cmax" ] || def=$cmax
+    if screen_cam_on; then echo "  The screen board camera is Camera. The cameras plugged into this Pi come after it."; fi
+    if [ -z "$CAM_COUNT" ]; then CAM_CHK_EXTRA="--min $cmin --max $cmax" cam_ask "How many cameras do you want to set up on this Pi ($cmin to $cmax)?" "$def" count; CAM_COUNT="$CAM_ANSWER"; fi
+    if [ -z "$CAM_MODE" ]; then
+        if [ "${WM_ASSUME_YES:-0}" != 1 ]; then echo "  Streamer (mode):  1) ustreamer (default, USB cameras)   2) camera-streamer (Pi hardware, USB and ribbon camera)   3) spyglass (ribbon camera on a Pi 5)"; fi
+        cam_ask "Which streamer (1, 2, 3 or the name)?" ustreamer streamer; CAM_MODE="$CAM_ANSWER"
+    fi
+    if [ -z "$CAM_RES" ]; then
+        if [ "${WM_ASSUME_YES:-0}" != 1 ]; then echo "  Picture size:  1) 480p (640x480, lightest)   2) 720p (1280x720)   3) 1080p (1920x1080, heaviest)   or type WIDTHxHEIGHT"; fi
+        cam_ask "Picture size (1, 2, 3 or WIDTHxHEIGHT)?" 2 resolution; CAM_RES="$CAM_ANSWER"
+    fi
+    if [ -z "$CAM_FPS" ]; then cam_ask "Pictures per second (max_fps, 1 to 60)?" 15 fps; CAM_FPS="$CAM_ANSWER"; fi
+    return 0
+}
+crowsnest_conf_make() {   # a fresh crowsnest.conf with every option explained; one that exists is kept and the explained copy goes next to it
+    local conf="$HOME_DIR/printer_data/config/crowsnest.conf" py model rc n
+    py="$(cam_py)"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would write crowsnest.conf (explained; an existing one is kept, the new copy goes next to it as crowsnest.conf.new)${NC}"; return 0; fi
+    if [ ! -f "$py" ]; then [ -f "$conf" ] || cp "$SCRIPT_DIR/config/crowsnest.conf" "$conf"; return 0; fi
+    model="$(pi_model)"; n="${CAM_COUNT:-1}"
+    local args=(--model "$model" --count "$n" --resolution "${CAM_RES:-720p}" --fps "${CAM_FPS:-15}" --mode "${CAM_MODE:-ustreamer}" --first "$(screen_cam_first)")
+    if [ ! -f "$conf" ]; then
+        python3 -I "$py" conf "${args[@]}" --out "$conf" >/dev/null; rc=$?
+        [ "$rc" = 10 ] && print_success "crowsnest.conf written: $n camera(s), ${CAM_MODE:-ustreamer}, ${CAM_RES:-720p}, ${CAM_FPS:-15} fps. Every option is explained at the top of the file." || warn_later "crowsnest.conf could not be written."
+    elif ! grep -q 'Written by the WM_Ultra_Vanilla_Klipper installer' "$conf" && [ ! -f "$conf.new" ]; then
+        python3 -I "$py" conf "${args[@]}" --out "$conf" --keep >/dev/null
+        print_info "Your crowsnest.conf is kept as it is. A new copy that explains every option is next to it: crowsnest.conf.new"
+    fi
+}
+moonraker_reload_webcams() {   # Moonraker reads moonraker.conf only when it starts: without this restart Fluidd keeps listing the old cameras (F-135)
+    [ "$DRY" = 1 ] && return 0
+    if [ "$TESTING" = 1 ] || [ -f /etc/systemd/system/moonraker.service ]; then
+        SUDO systemctl restart moonraker && { MOONRAKER_CHANGED=0; print_info "Moonraker restarted so Fluidd lists the new cameras."; }
+    fi
+}
+moonraker_webcams() {   # the cameras Fluidd lists: [webcam Camera], [webcam Camera 2], [webcam Camera 3] ... in moonraker.conf (existing ones are left alone)
+    local conf="$HOME_DIR/printer_data/config/moonraker.conf" py n out rc
+    py="$(cam_py)"; [ -f "$py" ] && [ -f "$conf" ] || return 0
+    n="$CAM_COUNT"; [ -n "$n" ] || n="$(python3 -I "$py" cams "$HOME_DIR/printer_data/config/crowsnest.conf")"
+    if screen_cam_on; then [ "${n:-0}" -ge 0 ] 2>/dev/null || n=0; n=$((n+1))      # Camera = the screen board camera, Camera 2 ... = this Pi
+    else [ "${n:-0}" -ge 1 ] 2>/dev/null || n=1; fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would add the missing [webcam Camera ...] sections to moonraker.conf${NC}"; return 0; fi
+    out="$(python3 -I "$py" moonraker "$conf" --count "$n")"; rc=$?
+    if [ "$rc" = 10 ]; then
+        cp -p "$conf" "$conf.wm-before-webcams-$STAMP"
+        python3 -I "$py" moonraker "$conf" --count "$n" --write >/dev/null && { print_success "moonraker.conf: ${out#would add: } now listed as webcams in Fluidd (copy: moonraker.conf.wm-before-webcams-$STAMP)"; MOONRAKER_CHANGED=1; moonraker_reload_webcams; }
+    else print_success "moonraker.conf already lists the webcams"; fi
+}
+do_webcam_setup() {   # ./installer.sh --webcam-setup
+    print_header "Webcam setup"
+    load_answers || true
+    CAM_COUNT="${CLI_CAM_COUNT:-}"; CAM_RES="${CLI_CAM_RES:-}"; CAM_FPS="${CLI_CAM_FPS:-}"; SCREEN_CAM="${CLI_SCREEN_CAM:-}"   # B-060: the saved answers must not hide the questions: "set up the cameras again" asks again
+    [ -d "$HOME_DIR/crowsnest" ] || die_with_fix "the webcam service is not installed." "install it first: ./installer.sh --update --only-addon webcam --webcam on"
+    local conf="$HOME_DIR/printer_data/config/crowsnest.conf"
+    camera_questions
+    if screen_cam_on; then CAM_COUNT="${CAM_COUNT:-0}"; else CAM_COUNT="${CAM_COUNT:-1}"; fi; CAM_RES="${CAM_RES:-720p}"; CAM_FPS="${CAM_FPS:-15}"; CAM_MODE="${CAM_MODE:-ustreamer}"
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would rewrite crowsnest.conf ($CAM_COUNT camera(s), $CAM_RES, $CAM_FPS fps; a copy of the old one is kept)${NC}"; return 0; fi
+    if [ -f "$conf" ]; then
+        ask_yn "Replace crowsnest.conf with these settings? A copy of the old one is kept." y || { echo "Nothing changed."; return 0; }
+        cp -p "$conf" "$conf.wm-before-webcam-setup-$STAMP"; rm -f "$conf"
+    fi
+    crowsnest_conf_make
+    screen_camera_apply
+    save_answers
+    if [ -f /etc/systemd/system/crowsnest.service ] || [ "$TESTING" = 1 ]; then crowsnest_follow_camera && print_success "crowsnest restarted with the new settings." || print_info "No camera found, so the webcam service stays off. Plug one in, then run this again or: ./installer.sh --first-start"; fi
+    [ "${MOONRAKER_CHANGED:-0}" = 1 ] && SUDO systemctl restart moonraker
+    return 0
+}
+step_crowsnest() {
+    [ "$WANT_CROWSNEST" = 1 ] || return 0
+    print_header "Step 13: webcam service (crowsnest)"
+    why "Streams USB cameras on ports 8080-8083, where the nginx config looks for them. Built from the version WonderMaker ships."
+    local pin url sha; pin="$(addon_pin crowsnest)"; url="${pin%|*}"; sha="${pin#*|}"
+    if screen_cam_on && [ "${CAM_COUNT:-0}" = 0 ] && [ ! -d "$HOME_DIR/crowsnest" ]; then   # only the screen board camera: this Pi streams nothing, so nothing is built
+        print_info "No camera on this Pi, only the screen board camera: the webcam service is not built here."
+        screen_camera_apply; return 0
+    fi
+    fetch_addon "$url" "$sha" "$HOME_DIR/crowsnest" || { warn_later "Could not download crowsnest (network?)."; return 0; }
+    crowsnest_conf_make
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: sudo make install in ~/crowsnest (unattended; builds ustreamer, installs crowsnest.service)${NC}"
+    elif [ "$TESTING" = 1 ]; then echo "[test] sudo make install (crowsnest)" >> "$HOME_DIR/.sudo.log"
+    else
+        local conf="$HOME_DIR/printer_data/config/crowsnest.conf"; cp "$conf" "$conf.wm-keep"   # crowsnest's installer replaces the file with its own default
+        heartbeat_start "building the webcam service (can take 10 minutes)"
+        ( cd "$HOME_DIR/crowsnest" && sudo env CROWSNEST_UNATTENDED=1 CROWSNEST_ADD_CROWSNEST_MOONRAKER=0 make install ) || { heartbeat_stop; warn_later "crowsnest install failed. See the output above; webcams are optional."; cp "$conf.wm-keep" "$conf"; return 0; }
+        heartbeat_stop
+        cp "$conf.wm-keep" "$conf"; rm -f "$conf.wm-keep"
+    fi
+    record "HOMEDIR crowsnest"; record "FILE /etc/systemd/system/crowsnest.service"
+    screen_camera_apply
+    if crowsnest_follow_camera; then print_success "crowsnest installed and started: a camera was found."
+    else print_success "crowsnest installed. No camera found, so it is not started. Plug a camera in, then: sudo systemctl enable --now crowsnest   (or ./installer.sh --first-start)"; fi
+}
+
+step_start() {
+    print_header "Step 14: start Moonraker"
+    SUDO systemctl restart moonraker
+    if [ "$TESTING" != 1 ] && [ "$DRY" != 1 ]; then
+        sleep 4
+        curl -fsS -m 5 http://127.0.0.1:7125/server/info >/dev/null 2>&1 && print_success "Moonraker answers on port 7125" || warn_later "Moonraker did not answer yet. Look at: journalctl -u moonraker -n 50"
+    fi
+}
+
+step_fluidd_categories() {   # runs once Klipper is up (the macro names are only known after Klipper has loaded them). The ACE Pro project does the work through Moonraker; it creates Fluidd's macro settings itself when Fluidd was never opened.
+    { [ "$WANT_ACEPRO" = 1 ] || ace_installed; } && [ "$DRY" != 1 ] && [ "$TESTING" != 1 ] && [ -f "$(ace_dir)/installer.sh" ] || return 0
+    print_header "Fluidd macro categories"
+    why "Fluidd lists every macro in one long row. Klipper is running now, so the macros are known and can be put into coloured categories. Nothing needs to be opened in Fluidd first. A macro you moved, recoloured, renamed or hid yourself is never changed."
+    if [ "$(klippy_state)" != ready ]; then
+        warn_later "The Fluidd macro categories are not set up: Klipper is not ready. When it is, run: cd ~/wm-ultra-fluidd-acepro-panel && ./installer.sh --fluidd-categories"; return 0
+    fi
+    local out; out="$(ace_run_installer --fluidd-categories 2>&1)"; echo "$out" | tail -4 | sed 's/^/  /'
+    if api_get "/server/database/item?namespace=fluidd&key=macros" | grep -q '"stored"'; then print_success "Fluidd macro categories set up"
+    else warn_later "The Fluidd macro categories were not stored. Run: cd ~/wm-ultra-fluidd-acepro-panel && ./installer.sh --fluidd-categories"; fi
+}
+
+questions() {
+    print_header "A few questions"
+    ask_yn "Install the Fluidd with the WonderMaker Toolheads panel (recommended)?" y || WANT_PANEL=0
+    ask_yn "Install webcam support (crowsnest, as WonderMaker uses)?" y || WANT_CROWSNEST=0
+    [ "$WANT_CROWSNEST" = 1 ] && camera_questions
+    ask_yn "Install and activate timelapse (Moonraker timelapse + ffmpeg)?" y || WANT_TIMELAPSE=0
+    if [ "$WANT_ACEPRO" = ask ]; then   # the ACE Pro driver and config come from the wm-ultra-fluidd-acepro-panel project (downloaded)
+        ask_yn "Do you have an Anycubic ACE Pro to connect (adds its Klipper driver and config)?" n && WANT_ACEPRO=1 || WANT_ACEPRO=0
+    fi
+    # Remote access (Obico, OctoApp, OctoEverywhere) is not asked here: each needs an account and its own questions.
+    # Add them afterwards in the menu (Add-ons), or give --obico on, --octoapp on, --octoeverywhere on to this install.
+    [ "$WANT_OBICO" = ask ] && WANT_OBICO=0
+    [ "$WANT_OCTOAPP" = ask ] && WANT_OCTOAPP=0
+    [ "$WANT_OCTOEVERYWHERE" = ask ] && WANT_OCTOEVERYWHERE=0
+    if [ "$WANT_OBICO$WANT_OCTOAPP$WANT_OCTOEVERYWHERE" = 000 ] && [ "${WM_ASSUME_YES:-0}" != 1 ]; then
+        print_info "Obico, OctoApp, OctoEverywhere, Shake&Tune and Spoolman are not part of this install. Add them any time: ./installer.sh, then Add-ons."
+    fi
+    if [ "$WANT_NETMGR" = ask ]; then
+        if [ "$WANT_SCREEN" != 1 ]; then WANT_NETMGR=0
+        elif nm_active; then print_info "NetworkManager is already running here, so KlipperScreen's Network panel will work."; WANT_NETMGR=0
+        else
+            echo "  KlipperScreen has a Network panel (pick a Wi-Fi network on the screen). It needs NetworkManager."
+            echo -e "  ${YELLOW}Note:${NC} switching this Pi to NetworkManager can DROP the network connection (your SSH session and Fluidd) and you may have to enter the Wi-Fi password again on the screen or with nmtui."
+            echo "  Nothing is restarted by the installer: the change starts at the next reboot. You can add it later with: ./installer.sh --update --network-manager on"
+            if ask_yn "Install NetworkManager for the Network panel?" n; then WANT_NETMGR=1; else WANT_NETMGR=0; fi
+        fi
+    fi
+}
+
+# ============================================================================
+# Checks and state (all of these can be faked in tests with WM_TEST_* variables)
+# ============================================================================
+test_systemctl() {  # fake service state for tests
+    [ "$1" = systemctl ] || return 0
+    local v="${2:-}" u="${3:-}"; mkdir -p "$HOME_DIR/.svc"
+    case "$v" in
+        enable) touch "$HOME_DIR/.svc/$u.enabled" ;;
+        disable) rm -f "$HOME_DIR/.svc/$u.enabled" ;;
+        start|restart) touch "$HOME_DIR/.svc/$u.active" ;;
+        stop) rm -f "$HOME_DIR/.svc/$u.active" ;;
+    esac
+}
+service_state() {
+    if [ "$TESTING" = 1 ]; then [ -f "$HOME_DIR/.svc/$1.active" ] && echo active || echo inactive; return; fi
+    systemctl is-active "$1" 2>/dev/null || true
+}
+service_enabled() {
+    if [ "$TESTING" = 1 ]; then [ -f "$HOME_DIR/.svc/$1.enabled" ] && echo enabled || echo disabled; return; fi
+    systemctl is-enabled "$1" 2>/dev/null || true
+}
+net_ok()   { [ "$TESTING" = 1 ] && { [ "${WM_TEST_NO_NET:-0}" != 1 ]; return; }; curl -fsI -m 8 "$1" >/dev/null 2>&1; }
+usb_bridge_present() { [ "$TESTING" = 1 ] && { [ "${WM_TEST_BRIDGE:-1}" = 1 ]; return; }; lsusb 2>/dev/null | grep -qi '1d50:606f'; }
+can_exists()  { [ "$TESTING" = 1 ] && { [ "${WM_TEST_CAN:-1}" != none ]; return; }; ip link show can0 >/dev/null 2>&1; }
+can_is_up()   { [ "$TESTING" = 1 ] && { [ "${WM_TEST_CAN:-1}" = 1 ]; return; }; [ "$(ip -br link show can0 2>/dev/null | awk '{print $2}')" = UP ]; }
+can_query_raw() {
+    if [ "$TESTING" = 1 ]; then cat "${WM_TEST_CANQUERY:-/dev/null}" 2>/dev/null; return 0; fi
+    "$HOME_DIR/klippy-env/bin/python" "$HOME_DIR/klipper/scripts/canbus_query.py" can0 2>&1
+}
+power_flags() { [ "$TESTING" = 1 ] && { echo "${WM_TEST_THROTTLED:-0x0}"; return; }; vcgencmd get_throttled 2>/dev/null | sed 's/.*=//'; }
+ntp_ok()      { [ "$TESTING" = 1 ] && { return 0; }; [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ]; }
+api_get() {  # path -> body (empty on failure)
+    if [ "$TESTING" = 1 ] && [ -n "${WM_TEST_STORE:-}" ] && [ "${1#/server/gcode_store}" != "$1" ]; then cat "$WM_TEST_STORE"; return 0; fi   # test: a recorded Fluidd console
+    if [ "$TESTING" = 1 ]; then [ "${WM_TEST_MOONRAKER:-1}" = 1 ] && echo '{"result":{"klippy_state":"'"${WM_TEST_KLIPPY:-ready}"'","moonraker_version":"test"}}'; return 0; fi
+    curl -fsS -m 4 "http://127.0.0.1:7125$1" 2>/dev/null
+}
+wait_klipper_ready() {   # sets WAIT_ST; waits up to 60 s, stops early when Klipper stays in error/shutdown for two reads in a row
+    local i bad=0; WAIT_ST=""
+    for i in $(seq 1 30); do
+        WAIT_ST="$(klippy_state)"
+        [ "$WAIT_ST" = ready ] && return 0
+        [ $(( i % 7 )) -eq 0 ] && [ "$TESTING" != 1 ] && echo -e "  ${DIM}... still waiting: Klipper is '${WAIT_ST:-not answering}' ($(( i * 2 )) s of 60)${NC}"
+        case "$WAIT_ST" in error|shutdown) bad=$((bad+1)); [ "$bad" -ge 2 ] && return 1 ;; *) bad=0 ;; esac
+        sleep 2
+    done
+    return 1
+}
+klippy_state() { api_get /server/info | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["klippy_state"])' 2>/dev/null; }
+print_state() {
+    [ "$TESTING" = 1 ] && { echo "${WM_TEST_PRINT_STATE:-}"; return; }
+    api_get '/printer/objects/query?print_stats=state' | python3 -c 'import sys,json;print(json.load(sys.stdin)["result"]["status"]["print_stats"]["state"])' 2>/dev/null
+}
+guard_not_printing() {
+    local s; s="$(print_state)"
+    case "$s" in printing|paused)
+        if [ "$FORCE" = 1 ]; then print_warning "A print is active ($s) but --force was given."
+        else die_with_fix "a print is active ($s)." "wait until it ends, or use --force (not recommended)."; fi ;;
+    esac
+}
+cfg_dir() { echo "$HOME_DIR/printer_data/config"; }
+cfg_uuids() {  # prints "file uuid" for every non-empty canbus_uuid in the config
+    local f; for f in "$(cfg_dir)"/*.cfg; do [ -f "$f" ] || continue
+        awk -F: 'tolower($1) ~ /^[ \t]*canbus_uuid[ \t]*$/ {v=$2; sub(/#.*/,"",v); gsub(/[ \t\r]/,"",v); if (v!="") print FILENAME" "tolower(v)}' "$f"
+    done
+}
+fill_blank_uuids() {  # the factory files ship empty "canbus_uuid:" for T0-T3 and the load cell; Klipper counts every empty one as the same id ("Duplicate canbus_uuid") and will not read its config
+    local d f sec n changed=0; d="$(cfg_dir)"
+    [ "$DRY" = 1 ] && return 0
+    for f in "$d"/wm_zru_thr[0-3].cfg "$d"/wm_zru_load_cell.cfg; do [ -f "$f" ] || continue
+        awk -F: 'tolower($1) ~ /^[ \t]*canbus_uuid[ \t]*$/ {v=$2; sub(/#.*/,"",v); gsub(/[ \t\r]/,"",v); if (v=="") f=1} END{exit f?0:1}' "$f" || continue
+        case "$(basename "$f")" in wm_zru_thr[0-3].cfg) n="$(basename "$f" | tr -dc '0-3')" ;; *) n=4 ;; esac
+        mkdir -p "$BACKUP_ROOT/uuid-$STAMP"; cp "$f" "$BACKUP_ROOT/uuid-$STAMP/"
+        sed -i -E "s/^([[:space:]]*canbus_uuid[[:space:]]*:)[[:space:]]*(#.*)?\r?$/\1 b${n}0000000000/" "$f"
+        changed=$((changed+1))
+    done
+    [ "$changed" = 0 ] || print_info "$changed device(s) had an empty canbus_uuid, which makes Klipper stop with 'Duplicate canbus_uuid'. Each now has a placeholder (b00000000000, b10000000000, ... b40000000000 for the load cell). Run ./installer.sh --can-ids once the boards are connected: it finds the real ids by the firmware name each board reports (a copy of the old files: $BACKUP_ROOT/uuid-$STAMP)."
+}
+found_uuids() { can_query_raw | grep -oiE 'canbus_uuid=[0-9a-f]{12}' | cut -d= -f2 | tr 'A-F' 'a-f' | sort -u; }
+found_uuids_retry() {   # right after can0 comes up the first query can come back empty: ask up to 3 times, 2 s apart (no waiting in tests)
+    local f i
+    for i in 1 2 3; do
+        f="$(found_uuids)"; [ -n "$f" ] && { echo "$f"; return 0; }
+        [ "$TESTING" = 1 ] || [ "$i" = 3 ] || sleep 2
+    done
+    return 0
+}
+model_now() { cat "$HOME_DIR/printer_data/wm-model" 2>/dev/null || echo "$MODEL"; }
+
+modules_present() {  # prints missing module names
+    local m d="$HOME_DIR/klipper/klippy/extras"
+    for m in "${COMPILED_MODULES[@]}"; do
+        case " cs1237 hx711 heater_air_core heater_feng xy_offset_calibrator_core " in
+            *" $m "*) ls "$d/$m".*.so >/dev/null 2>&1 || echo "$m" ;;   # upstream Klipper has its own cs1237.py: only WonderMaker's compiled file counts
+            *) ls "$d/$m".*.so >/dev/null 2>&1 || [ -f "$d/$m.py" ] || echo "$m" ;;
+        esac
+    done
+}
+restore_modules_from_repo() {  # copies the bundled factory modules, each checked against its checksum
+    local src="$SCRIPT_DIR/factory/$(model_now)" sum path f n=0
+    [ -f "$src/modules.sha256" ] || { print_error "no factory modules for $(model_now) in the repository"; return 1; }
+    while read -r sum path; do
+        f="$src/klipper/$path"
+        [ -f "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ] || { print_error "$(basename "$path"): repository copy missing or damaged"; return 1; }
+        run cp "$f" "$HOME_DIR/klipper/$path"; n=$((n+1))
+    done < "$src/modules.sha256"
+    print_success "$n compiled modules restored from the repository (checksums match)"
+}
+
+step_wm_modules() {   # --update: the Pi-side WonderMaker modules (wm_*.py) of this repository replace changed copies in ~/klipper
+    print_header "Pi-side WonderMaker modules"
+    why "A fix in one of the wm_*.py modules (wm_mcu_tweaks, wm_adaptive_mesh, ...) only reaches a Pi that is already installed if the update copies it. Each file is checked against the checksum list of the repository first; unchanged files are left alone. Klipper is restarted at the end of the update, which loads them."
+    local src="$SCRIPT_DIR/factory/$(model_now)" sum path f n=0 bad=0
+    [ -f "$src/SHA256SUMS" ] || { print_info "no checksum list for the $(model_now) in this repository: nothing to compare"; return 0; }
+    [ -d "$HOME_DIR/klipper/klippy/extras" ] || { print_info "~/klipper/klippy/extras is missing: nothing to refresh"; return 0; }
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would copy the wm_*.py modules that differ from this repository into ~/klipper/klippy/extras${NC}"; return 0; fi
+    while read -r sum path; do
+        case "$path" in klipper/klippy/extras/wm_*.py|klipper/klippy/extras/auto_speed.py|klipper/klippy/extras/autospeed/*) ;; *) continue ;; esac
+        f="$src/$path"
+        if [ ! -f "$f" ] || [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$sum" ]; then print_warning "$(basename "$path"): the repository copy is missing or damaged, skipped"; bad=1; continue; fi
+        [ -f "$HOME_DIR/$path" ] && [ "$(sha256sum "$HOME_DIR/$path" | cut -d' ' -f1)" = "$sum" ] && continue
+        run mkdir -p "$(dirname "$HOME_DIR/$path")"; run cp "$f" "$HOME_DIR/$path" && { n=$((n+1)); print_info "updated $(basename "$path")"; }
+    done < "$src/SHA256SUMS"
+    [ "$bad" = 0 ] || warn_later "Some Pi-side modules in this repository are damaged. Restore them: cd $REPO_DIR && git checkout -- factory"
+    if [ "$n" -gt 0 ]; then print_success "$n Pi-side module(s) updated"; else print_success "Pi-side modules are already the latest"; fi
+}
+
+validate_config() {  # prints problems; returns the number of errors. Warnings do not count.
+    local cfg="$(cfg_dir)/printer.cfg" errs=0 f inc
+    [ -f "$cfg" ] || { print_error "printer.cfg not found in $(cfg_dir)"; return 1; }
+    while read -r inc; do
+        case "$inc" in *'*'*) continue ;; esac
+        [ -f "$(cfg_dir)/$inc" ] || { print_error "printer.cfg includes $inc, but the file does not exist"; errs=$((errs+1)); }
+    done < <(grep -E '^[[:space:]]*\[include ' "$cfg" | sed -E 's/^[[:space:]]*\[include +//; s/\].*//')
+    local want have; have=off; grep -qE '^\[include zru-s.cfg\]' "$cfg" && have=on
+    [ "$(model_now)" = ultra-s ] && want=on || want=off
+    if [ "$have" != "$want" ]; then print_error "printer.cfg has zru-s.cfg $have, but the model is $(model_now) (needs $want)"; errs=$((errs+1)); fi
+    [ -d "$HOME_DIR/printer_data/gcodes" ] || { print_warning "~/printer_data/gcodes is missing"; }
+    return $errs
+}
+
+# ============================================================================
+# Pre-flight, plan and saved answers
+# ============================================================================
+preflight() {
+    print_header "Pre-flight checks"
+    local bad=0
+    if net_ok https://github.com; then print_success "Internet: github.com reachable"; else print_error "github.com is not reachable"; bad=1; fi
+    if net_ok https://pypi.org; then print_success "Internet: pypi.org reachable"; else print_error "pypi.org is not reachable"; bad=1; fi
+    local p; p="$(power_flags)"
+    if [ -n "$p" ] && [ "$p" != 0x0 ]; then
+        if [ $(( p & 0x1 )) -ne 0 ]; then print_warning "The Pi reports under-voltage right now ($p). Use the official 5 V / 3 A power supply."; warn_later "Under-voltage reported by the Pi ($p)."
+        else print_warning "The Pi reported power or heat problems since boot ($p)."; fi
+    else print_success "Power supply: no under-voltage reported"; fi
+    ntp_ok && print_success "Clock is synchronized" || print_warning "The clock is not synchronized: HTTPS downloads can fail. Check the date or the network."
+    [ "$bad" = 0 ] || die_with_fix "no internet access to the download servers." "check the network, then run the installer again."
+}
+
+save_answers() {
+    [ "$DRY" = 1 ] && return 0
+    mkdir -p "$BACKUP_ROOT"
+    cat > "$CONF" <<E
+VERSION=$VERSION
+MODEL=$MODEL
+SRC_KIND=$SRC_KIND
+WANT_PANEL=$WANT_PANEL
+WANT_SCREEN=$WANT_SCREEN
+SCREEN_BACKEND=$SCREEN_BACKEND
+REPO_DIR=$REPO_DIR
+KS_PIN=$(addon_pin klipperscreen | cut -d'|' -f2)
+WANT_TIMELAPSE=$WANT_TIMELAPSE
+WANT_CROWSNEST=$WANT_CROWSNEST
+CAM_COUNT=$CAM_COUNT
+CAM_RES=$CAM_RES
+CAM_FPS=$CAM_FPS
+CAM_MODE=$CAM_MODE
+SCREEN_CAM=$SCREEN_CAM
+WANT_SHELLCMD=$WANT_SHELLCMD
+WANT_OBICO=$WANT_OBICO
+WANT_OCTOAPP=$WANT_OCTOAPP
+WANT_OCTOEVERYWHERE=$WANT_OCTOEVERYWHERE
+WANT_NETMGR=$WANT_NETMGR
+WANT_SHAKETUNE=$WANT_SHAKETUNE
+WANT_SPOOLMAN=$WANT_SPOOLMAN
+WANT_ACEPRO=$WANT_ACEPRO
+CROWSNEST_PIN=$(addon_pin crowsnest | cut -d'|' -f2)
+TIMELAPSE_PIN=$(addon_pin moonraker-timelapse | cut -d'|' -f2)
+PANEL_SHA=$(if [ "$PANEL_FAILED" = 1 ]; then echo "${OLD_PANEL_SHA:-}"; else [ -n "$PANEL_ZIP" ] && sha256sum "$PANEL_ZIP" 2>/dev/null | cut -d' ' -f1; fi)
+E
+}
+load_answers() {
+    [ -f "$CONF" ] || return 1
+    local k v
+    while IFS='=' read -r k v; do
+        case "$k" in
+            VERSION) OLD_VERSION="$v" ;; CROWSNEST_PIN) OLD_CN_PIN="$v" ;; TIMELAPSE_PIN) OLD_TL_PIN="$v" ;; PANEL_SHA) OLD_PANEL_SHA="$v" ;;
+            MODEL) [ -n "${MODEL_SET:-}" ] || MODEL="$v" ;; SRC_KIND) : ;;
+            WANT_PANEL|WANT_SCREEN|WANT_TIMELAPSE|WANT_CROWSNEST|WANT_SHELLCMD|WANT_OBICO|WANT_OCTOAPP|WANT_OCTOEVERYWHERE|WANT_NETMGR|WANT_SHAKETUNE|WANT_SPOOLMAN|WANT_ACEPRO|OBICO_SERVER) printf -v "$k" '%s' "$v" ;;
+            SCREEN_CAM) [ -n "${CLI_SCREEN_CAM:-}" ] || SCREEN_CAM="$v" ;;
+            CAM_COUNT) [ -n "${CLI_CAM_COUNT:-}" ] || CAM_COUNT="$v" ;; CAM_RES) [ -n "${CLI_CAM_RES:-}" ] || CAM_RES="$v" ;; CAM_FPS) [ -n "${CLI_CAM_FPS:-}" ] || CAM_FPS="$v" ;; CAM_MODE) [ -n "${CLI_CAM_MODE:-}" ] || CAM_MODE="$v" ;;
+            SCREEN_BACKEND) printf -v "$k" '%s' "$v" ;; KS_PIN) OLD_KS_PIN="$v" ;;
+        esac
+    done < "$CONF"
+    local r; for r in ${CLI_REMOTE:-}; do case "$r" in obico) WANT_OBICO="$CLI_OBICO" ;; octoapp) WANT_OCTOAPP="$CLI_OCTOAPP" ;; octoeverywhere) WANT_OCTOEVERYWHERE="$CLI_OCTOEVERYWHERE" ;; netmgr) WANT_NETMGR="$CLI_NETMGR" ;; shaketune) WANT_SHAKETUNE="$CLI_SHAKETUNE" ;; spoolman) WANT_SPOOLMAN="$CLI_SPOOLMAN" ;; acepro) WANT_ACEPRO="$CLI_ACEPRO" ;; webcam) WANT_CROWSNEST="$CLI_WEBCAM" ;; timelapse) WANT_TIMELAPSE="$CLI_TIMELAPSE" ;; esac; done
+    [ -n "${CLI_SHELLCMD:-}" ] && WANT_SHELLCMD="$CLI_SHELLCMD"    # --shell-command on|off given now wins over the saved answer
+    return 0
+}
+# Every optional program the installer can add. show_plan prints this list, so a new program (add its WANT_ variable here)
+# appears in the plan; a test fails when a WANT_ variable is saved but missing from this list.
+PLAN_OPTIONS=(
+    "panel (Fluidd)|WANT_PANEL"
+    "webcam|WANT_CROWSNEST"
+    "timelapse|WANT_TIMELAPSE"
+    "shell command|WANT_SHELLCMD"
+    "touchscreen|WANT_SCREEN"
+    "obico|WANT_OBICO"
+    "octoapp|WANT_OCTOAPP"
+    "octoeverywhere|WANT_OCTOEVERYWHERE"
+    "network manager|WANT_NETMGR"
+    "klippain shake&tune|WANT_SHAKETUNE"
+    "spoolman|WANT_SPOOLMAN"
+    "ace pro|WANT_ACEPRO"
+)
+show_plan() {
+    print_header "Plan (nothing has been changed yet)"
+    echo "  Printer model:   $MODEL"
+    echo "  This computer:   $(pi_model_line)"
+    echo "  Software from:   $SRC_KIND ${SRC_ARG:+($SRC_ARG)}"
+    local d moved=""; for d in klipper moonraker printer_data fluidd TM_T1; do [ -e "$HOME_DIR/$d" ] && moved="$moved ~/$d"; done
+    [ -n "$moved" ] && echo "  Moved to backup (~/wm-rpi-backup/old-*):$moved"
+    echo "  Installs:        system packages, Python 3.9, Klipper/Moonraker environments, Moonraker + nginx services, can0 rule"
+    echo "  Optional programs (yes = installed in this run, no = skipped):"
+    local o name var val
+    for o in "${PLAN_OPTIONS[@]}"; do
+        name="${o%%|*}"; var="${o##*|}"; val="${!var:-}"
+        case "$val" in
+            1) val=yes ;; macros) val="only the ZR Tools macros" ;; ask) val="not chosen" ;; *) val=no ;;
+        esac
+        case "$var:$val" in WANT_OBICO:no|WANT_OCTOAPP:no|WANT_OCTOEVERYWHERE:no|WANT_SHAKETUNE:no|WANT_SPOOLMAN:no|WANT_ACEPRO:no) val="no (add later: menu, Add-ons)" ;; esac
+        printf '      %-16s %s\n' "$name" "$val"
+    done
+    [ "$AUTOSTART" = 1 ] && echo "  At the end:      Klipper, Moonraker, nginx and crowsnest are enabled and started (checks are shown; failures are reported)" \
+                         || echo "  At the end:      Klipper stays off (--no-start)"
+}
+update_notice() {  # show what changed since the version that was installed
+    [ -n "${OLD_VERSION:-}" ] && [ "$OLD_VERSION" != "$VERSION" ] || return 0
+    print_header "What changed since $OLD_VERSION"
+    awk -v old="## $OLD_VERSION" '$0==old{exit} {print}' "$SCRIPT_DIR/CHANGELOG.md" | sed -n '2,40p'
+}
+
+# ============================================================================
+# Hardware checks, first start, hardware test
+# ============================================================================
+CHK_FAIL=0; CHK_WARN=0
+chk_ok()   { echo -e "  ${GREEN}[ok]${NC}   $1"; }
+chk_fail() { echo -e "  ${RED}[FAIL]${NC} $1"; [ -n "${2:-}" ] && echo -e "         ${DIM}$2${NC}"; CHK_FAIL=$((CHK_FAIL+1)); }
+chk_warn() { echo -e "  ${YELLOW}[warn]${NC} $1"; [ -n "${2:-}" ] && echo -e "         ${DIM}$2${NC}"; CHK_WARN=$((CHK_WARN+1)); }
+
+fix_main_uuid() {  # the main board's uuid in wm_zru_mcu.cfg does not match the bus
+    local f="$(cfg_dir)/wm_zru_mcu.cfg" have="$1" found="$2" cand=() u c
+    local configured; configured="$(cfg_uuids | awk '{print $2}' | sort -u)"
+    for u in $found; do echo "$configured" | grep -qx "$u" || cand+=("$u"); done
+    if [ ${#cand[@]} -eq 0 ]; then chk_fail "wm_zru_mcu.cfg has uuid $have, which is not on the CAN bus, and the bus has no unknown device" "Check the USB cable, that the main board is powered, and that it runs the Klipper USB-CAN bridge firmware."; return 1; fi
+    if [ ${#cand[@]} -gt 1 ]; then
+        echo "  Several unknown devices are on the bus: ${cand[*]}"
+        [ "${WM_ASSUME_YES:-0}" = 1 ] && { chk_fail "cannot tell which one is the main board" "Run ./installer.sh --first-start and choose one."; return 1; }
+        local i=1; for c in "${cand[@]}"; do echo "    $i) $c"; i=$((i+1)); done
+        read -r -p "  Which one is the MAIN board (number, empty = none): " c || c=""
+        [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#cand[@]} ] || { chk_fail "no main board chosen"; return 1; }
+        u="${cand[$((c-1))]}"
+    else u="${cand[0]}"; fi
+    echo "  The config says the main board is $have; the bus has an unknown device $u."
+    if ask_yn "  Change canbus_uuid in wm_zru_mcu.cfg to $u (a copy is saved first)?" y; then
+        mkdir -p "$BACKUP_ROOT/uuid-$STAMP"; cp "$f" "$BACKUP_ROOT/uuid-$STAMP/wm_zru_mcu.cfg"
+        sed -i -E "s/^([[:space:]]*canbus_uuid[[:space:]]*:)[[:space:]]*[0-9a-fA-F]*/\1 $u/" "$f"
+        chk_ok "wm_zru_mcu.cfg now uses canbus_uuid $u (old file: $BACKUP_ROOT/uuid-$STAMP/)"; return 0
+    fi
+    chk_fail "main board uuid not changed"; return 1
+}
+
+can_dev_name() {  # config file -> the name used in messages
+    case "$(basename "$1")" in
+        wm_zru_mcu.cfg) echo "main board" ;; wm_zru_hub.cfg) echo "hub" ;; wm_zru_ext.cfg) echo "extruder board" ;;
+        wm_zru_load_cell.cfg) echo "load cell" ;; wm_zru_thr[0-3].cfg) echo "toolhead T$(basename "$1" | tr -dc '0-3')" ;; *) basename "$1" ;;
+    esac
+}
+can_dev_file() {  # a name typed by the user (main, hub, ext, cell, T0..T3, thr0..) -> config file path (empty = unknown name)
+    local n; n="$(echo "$1" | tr 'A-Z' 'a-z' | tr -d ' _-')"
+    case "$n" in
+        main|mcu|mainboard) echo "$(cfg_dir)/wm_zru_mcu.cfg" ;; hub) echo "$(cfg_dir)/wm_zru_hub.cfg" ;;
+        ext|extt|extruder|extruderboard) echo "$(cfg_dir)/wm_zru_ext.cfg" ;; cell|loadcell) echo "$(cfg_dir)/wm_zru_load_cell.cfg" ;;
+        t[0-3]|thr[0-3]) echo "$(cfg_dir)/wm_zru_thr${n: -1}.cfg" ;;
+    esac
+}
+can_missing_devs() {  # $1 = ids on the bus; prints "file uuid" for every device in the config whose id is not on the bus
+    local f u; while read -r f u; do [ -n "$f" ] || continue; echo "$1" | grep -qx "$u" || echo "$f $u"; done < <(cfg_uuids)
+}
+set_dev_uuid() {  # file new-uuid : writes it, a copy of the file is saved first
+    local f="$1" u="$2"
+    mkdir -p "$BACKUP_ROOT/uuid-$STAMP"; cp "$f" "$BACKUP_ROOT/uuid-$STAMP/"
+    sed -i -E "s/^([[:space:]]*canbus_uuid[[:space:]]*:)[[:space:]]*[0-9a-fA-F]*/\1 $u/" "$f"
+}
+fix_dev_uuid() {  # file have found nmissing : the config id of one device is not on the bus; offer the unknown device on the bus
+    local f="$1" have="$2" found="$3" nmiss="${4:-1}" name cand=() u c configured
+    name="$(can_dev_name "$f")"
+    configured="$(cfg_uuids | awk '{print $2}' | sort -u)"
+    for u in $found; do echo "$configured" | grep -qx "$u" || cand+=("$u"); done
+    if [ ${#cand[@]} -eq 0 ]; then echo "  $name: the config says $have, which is not on the CAN bus, and the bus has no unknown device (not powered, or not connected?)."; return 1; fi
+    if [ "${WM_ASSUME_YES:-0}" = 1 ] || [ "${DOC_FIXALL:-0}" = 1 ]; then
+        if [ ${#cand[@]} -ne 1 ] || [ "$nmiss" -ne 1 ]; then
+            echo "  $name: $nmiss device(s) have an id that is not on the bus and ${#cand[@]} unknown device(s) are on it (${cand[*]}), so I cannot tell which is which. Run ./installer.sh --can-ids and choose."; return 1
+        fi
+    fi
+    if [ ${#cand[@]} -gt 1 ]; then
+        echo "  $name has $have in the config; unknown devices on the bus:"
+        local i=1; for c in "${cand[@]}"; do echo "    $i) $c"; i=$((i+1)); done
+        read -r -p "  Which one is the $name (number, empty = leave it): " c || c=""
+        [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#cand[@]} ] || { echo "  $name: left as it is."; return 1; }
+        u="${cand[$((c-1))]}"
+    else u="${cand[0]}"; fi
+    echo "  The config says the $name is $have; the bus has an unknown device $u."
+    if ask_yn "  Change canbus_uuid in $(basename "$f") to $u (a copy is saved first)?" y; then
+        set_dev_uuid "$f" "$u"; echo "  $name now uses $u (old file: $BACKUP_ROOT/uuid-$STAMP/)"; return 0
+    fi
+    echo "  $name: not changed."; return 1
+}
+fix_all_dev_uuids() {  # $1 = ids on the bus : every device whose config id is not on the bus gets the same offer
+    local found="$1" miss f u n rc=0 fixed=0
+    miss="$(can_missing_devs "$found")"; n="$(echo "$miss" | grep -c . || true)"
+    [ "$n" -gt 0 ] || return 0
+    while read -r f u; do [ -n "$f" ] || continue
+        if fix_dev_uuid "$f" "$u" "$found" "$n"; then fixed=$((fixed+1)); else rc=1; fi
+    done <<< "$miss"
+    [ "$fixed" -gt 0 ] && echo "  Klipper reads the ids when it starts: restart it (sudo systemctl restart klipper) for the change to count."
+    return $rc
+}
+canmatch_py() { echo "$SCRIPT_DIR/scripts/wm_canmatch.py"; }
+canmatch_pending() { echo "$HOME_DIR/printer_data/.wm-extruder-setup-pending"; }   # exists from the moment the tool head ids were written in id order until Extruder Setup has put them in dock order
+can_match_boards() {  # finds every board by the firmware name it reports and writes all ids (copies go to $BACKUP_ROOT/uuid-*). 0 = written. Klipper must not be running.
+    local py="$HOME_DIR/klippy-env/bin/python" out rc
+    [ -f "$(canmatch_py)" ] || return 1
+    if [ "$TESTING" = 1 ]; then [ -n "${WM_TEST_CANMATCH:-}" ] || return 1; py=python3; fi
+    [ -x "$py" ] || py=python3
+    if [ "$DRY" = 1 ]; then print_info "dry run: the boards would be looked up by the firmware name each one reports"; return 1; fi
+    echo "  Looking the boards up by the firmware name each one reports (about 1 minute) ..."
+    out="$(WM_CANMATCH_FAKE="${WM_TEST_CANMATCH:-}" "$py" "$(canmatch_py)" run --config-dir "$(cfg_dir)" --backup-dir "$BACKUP_ROOT/uuid-$STAMP" --klipper-dir "$HOME_DIR/klipper" --python "$HOME_DIR/klippy-env/bin/python" --apply 2>&1)"; rc=$?
+    echo "$out" | grep -v '^RESULT' | sed 's/^/  /'
+    [ "$rc" = 0 ] || return 1
+    mkdir -p "$HOME_DIR/printer_data"; : > "$(canmatch_pending)"
+    return 0
+}
+extruder_setup_outcome() {  # $1 = start time (epoch): reads Fluidd's console since then. Prints "wait|", "same|", "apply|ID0=.. ID1=.. ID2=.. ID3=..", "dup|text", "stop|reason" or "error|text"
+    api_get '/server/gcode_store?count=120' | python3 -c '
+import sys, json, re
+t0 = float(sys.argv[1]); out = ("wait", ""); stop = False
+for m in json.load(sys.stdin)["result"]["gcode_store"]:
+    if m["time"] < t0: continue
+    s = m["message"]
+    if "_WM_MATCH_APPLY ID0=" in s:
+        g = re.search(r"(ID0=[0-9a-f]{12} ID1=[0-9a-f]{12} ID2=[0-9a-f]{12} ID3=[0-9a-f]{12})", s, re.I); out = ("apply", g.group(1) if g else "")
+    elif "prompt_text Every tool came out of its own dock" in s: out = ("same", "")
+    elif "would get the same CAN id" in s: out = ("dup", s.split("prompt_text ", 1)[-1])
+    elif "action:prompt_begin Matching stopped" in s: stop = True
+    elif stop and "action:prompt_text" in s: out = ("stop", s.split("prompt_text ", 1)[-1]); stop = False
+    elif s.startswith("!!") and out[0] == "wait": out = ("error", s)
+print(out[0] + "|" + out[1])' "$1" 2>/dev/null
+}
+step_extruder_setup() {  # REQUIRED after the ids were found by firmware name: the four tool head ids are in id order, not in dock order. The user can only accept the warning and look at the printer.
+    [ -f "$(canmatch_pending)" ] || return 0
+    print_header "Extruder Setup (required)"
+    why "The four tool heads report the same firmware name, so the installer could not tell which id belongs to which tool head. Extruder Setup picks up T0 to T3 one after another, sees which dock each one came out of and puts the ids in the right order."
+    local interactive=1
+    if [ "$TESTING" = 1 ]; then [ -n "${WM_TEST_MATCH:-}${WM_TEST_STORE:-}" ] || interactive=0
+    elif [ "${WM_ASSUME_YES:-0}" = 1 ] || [ ! -t 0 ]; then interactive=0; fi
+    if [ "$interactive" = 0 ]; then
+        print_warning "Extruder Setup was NOT done: it moves the printer, so it needs you at the printer. Look at the printer, hang all four tool heads in their docks, then run it in Fluidd (WM_EXTRUDER_SETUP, button Set Up) or run ./installer.sh --extruder-setup."
+        warn_later "Extruder Setup is still to do (the tool head ids are in id order, not in dock order): hang all four tool heads in their docks, then ./installer.sh --extruder-setup"
+        return 1
+    fi
+    if [ "$TESTING" != 1 ] && [ "$(klippy_state)" != ready ]; then   # the throw-away connections of the board matching can leave the main board in a shutdown state: one firmware restart clears it
+        echo "  Klipper is '$(klippy_state)': restarting the firmware once ..."
+        curl -s -m 20 -X POST http://127.0.0.1:7125/printer/firmware_restart >/dev/null 2>&1; sleep 5
+        wait_klipper_ready || { print_error "Klipper does not become ready (state: ${WAIT_ST:-unknown}), so Extruder Setup cannot run."; warn_later "Extruder Setup is still to do, Klipper was not ready: fix that, then ./installer.sh --extruder-setup"; return 1; }
+    fi
+    echo
+    echo -e "  ${RED}IMPORTANT: look at the printer now.${NC}"
+    echo "    - All four tool heads must hang in their docks. No tool head on the carriage."
+    echo "    - Heaters off, the tool heads cold, nothing in the way of the carriage."
+    echo "    - The printer will home, then pick up T0, T1, T2 and T3 one after another (about 2 minutes). Do not touch it while it runs."
+    echo
+    if [ "$TESTING" != 1 ]; then read -r -p "  Press Enter when you have looked at the printer and all four tool heads hang in their docks: " _ || true; fi
+    local t0 res kind arg i
+    t0="$(date +%s)"
+    if [ "$TESTING" = 1 ] && [ -n "${WM_TEST_STORE:-}" ]; then res="$(extruder_setup_outcome 0)"
+    elif [ "$TESTING" = 1 ]; then res="${WM_TEST_MATCH}|${WM_TEST_MATCH_ARG:-}"
+    else
+        ( curl -s -m 900 -X POST "http://127.0.0.1:7125/printer/gcode/script?script=_WM_MATCH_RUN" >/dev/null 2>&1 & )
+        echo "  Extruder Setup is running ..."
+        res="wait|"
+        for i in $(seq 1 200); do
+            sleep 3; res="$(extruder_setup_outcome "$t0")"; [ "${res%%|*}" = wait ] || break
+            [ $(( i % 10 )) -eq 0 ] && echo -e "  ${DIM}... still running ($(( i * 3 )) s)${NC}"
+        done
+    fi
+    kind="${res%%|*}"; arg="${res#*|}"
+    case "$kind" in
+        same) print_success "Every tool head came out of its own dock: the ids are right." ;;
+        apply)
+            echo "  The tool heads did not come out in id order: writing the right order and restarting the firmware ..."
+            if [ "$TESTING" = 1 ]; then python3 "$SCRIPT_DIR/scripts/wm_canids.py" --config "$(cfg_dir)" apply $(echo "$arg" | sed -E 's/ID[0-3]=//g') >/dev/null 2>&1
+            else curl -s -m 60 -G -X POST --data-urlencode "script=_WM_MATCH_APPLY $arg" http://127.0.0.1:7125/printer/gcode/script >/dev/null 2>&1; sleep 5; wait_klipper_ready || true; fi
+            local want got a b ok=1   # the ids really are in the files now? (the first install test printed "done" while the shell command had refused the ids)
+            got="$(python3 "$SCRIPT_DIR/scripts/wm_canids.py" --config "$(cfg_dir)" show 2>/dev/null | awk '{print $2}' | tr '\n' ' ')"
+            want="$(echo "$arg" | sed -E 's/ID[0-3]=//g') "
+            [ "$got" = "$want" ] || ok=0
+            if [ "$ok" = 1 ]; then print_success "The tool head ids are in dock order now."
+            else
+                print_error "The ids were NOT written. The files say: ${got:-nothing}  Expected: $want"
+                warn_later "Extruder Setup did not register the new tool head ids: run ./installer.sh --extruder-setup again, or WM_EXTRUDER_SETUP in Fluidd (Set Up, then Apply and restart)"
+                return 1
+            fi ;;
+        *)
+            print_error "Extruder Setup did not finish${arg:+: $arg}"
+            echo "  Nothing was written. Look at the printer (a tool head may still be on the carriage), hang all four in their docks, then run ./installer.sh --extruder-setup"
+            warn_later "Extruder Setup did not finish${arg:+ ($arg)}: ./installer.sh --extruder-setup"
+            return 1 ;;
+    esac
+    rm -f "$(canmatch_pending)"
+    return 0
+}
+do_extruder_setup_cmd() {  # --extruder-setup
+    guard_not_printing
+    [ "$(klippy_state)" = ready ] || [ "$TESTING" = 1 ] || die_with_fix "Klipper is not ready (state: $(klippy_state))." "./installer.sh --first-start, then run this again."
+    : > "$(canmatch_pending)"   # the setup is required: the file stays until it has finished
+    step_extruder_setup
+}
+do_can_ids() {  # --can-ids [set NAME UUID] : show which config ids answer on the CAN bus, offer to correct wrong ones, or set one by hand
+    guard_not_printing
+    print_header "CAN ids of the boards"
+    if [ -n "${CANID_NAME:-}" ]; then
+        local f; f="$(can_dev_file "$CANID_NAME")"
+        [ -n "$f" ] && [ -f "$f" ] || die_with_fix "no board called '$CANID_NAME'." "Use one of: main, hub, ext, cell, T0, T1, T2, T3."
+        [[ "${CANID_UUID:-}" =~ ^[0-9a-fA-F]{12}$ ]] || die_with_fix "'${CANID_UUID:-}' is not a CAN id." "A CAN id has 12 hex digits, for example ac8b57e80210. ./installer.sh --can-ids shows the ids on the bus."
+        set_dev_uuid "$f" "$(echo "$CANID_UUID" | tr 'A-F' 'a-f')"
+        print_success "$(can_dev_name "$f"): canbus_uuid is now $(echo "$CANID_UUID" | tr 'A-F' 'a-f') (copy of the old file: $BACKUP_ROOT/uuid-$STAMP/). Restart Klipper to use it."
+        return 0
+    fi
+    if ! { can_exists && can_is_up; }; then print_error "can0 is not up: the main board is not connected or the CAN rule is missing."; echo "  ./installer.sh --repair puts the can0 rule back."; return 1; fi
+    local restart=0
+    if [ "$(service_state klipper)" = active ]; then
+        echo "Klipper is running and uses the bus, so the boards cannot be asked while it runs."
+        ask_yn "Stop Klipper for the scan? It is started again afterwards." y || { echo "Nothing changed."; return 0; }
+        SUDO systemctl stop klipper; restart=1
+    fi
+    local found f u; found="$(found_uuids)"
+    if [ -z "$found" ]; then print_error "nothing answers on the CAN bus. Printer powered? CAN cable?"
+    else
+        echo "  On the bus: $(echo $found)"
+        while read -r f u; do [ -n "$f" ] || continue
+            if echo "$found" | grep -qx "$u"; then printf '  %-16s %s   answers\n' "$(can_dev_name "$f")" "$u"
+            else printf '  %-16s %s   NOT on the bus\n' "$(can_dev_name "$f")" "$u"; fi
+        done < <(cfg_uuids)
+        if [ -z "$(can_missing_devs "$found")" ]; then print_success "Every id in the config answers."
+        else
+            if ask_yn "Find every board by the firmware name it reports and write all ids? (recommended, about 1 minute)" y && can_match_boards; then
+                print_success "The ids were found by firmware name and written. The tool head order still has to be fixed by Extruder Setup."
+            else fix_all_dev_uuids "$found" || true; fi
+        fi
+    fi
+    if [ "$restart" = 1 ]; then SUDO systemctl start klipper; echo "Klipper started again."; [ -f "$(canmatch_pending)" ] && { wait_klipper_ready || true; step_extruder_setup || true; }; fi
+    return 0
+}
+
+hw_checks() {  # $1 = quiet header flag
+    CHK_FAIL=0; CHK_WARN=0
+    print_header "Checks before starting Klipper"
+    local miss; miss="$(modules_present | tr '\n' ' ')"
+    [ -z "$miss" ] && chk_ok "WonderMaker's compiled modules are present" || chk_fail "missing WonderMaker modules: $miss" "Run ./installer.sh --doctor to restore them from the repository."
+    if [ "$TESTING" != 1 ] && [ -x "$HOME_DIR/klippy-env/bin/python" ]; then
+        local m bad=""; for m in "${COMPILED_MODULES[@]}"; do module_imports "$m" || bad="$bad $m"; done
+        [ -z "$bad" ] && chk_ok "the modules import with Python 3.9" || chk_fail "modules that do not import:$bad" "They must be the factory files for aarch64 and Python 3.9."
+    fi
+    local nerr; validate_config >/tmp/.wm_val.$$ 2>&1; nerr=$?; cat /tmp/.wm_val.$$ | sed 's/^/  /'; rm -f /tmp/.wm_val.$$
+    [ "$nerr" = 0 ] && chk_ok "printer.cfg and its includes are consistent" || chk_fail "printer.cfg has $nerr problem(s) (listed above)"
+    if usb_bridge_present; then chk_ok "main board found on USB (1d50:606f)"; else chk_fail "no main board on USB (1d50:606f)" "Cable: docs/WIRING.md. The printer must be powered."; fi
+    if ! can_exists; then chk_fail "no can0 interface" "It appears when the main board is connected. Check the udev rule (./installer.sh --repair)."
+    elif can_is_up; then chk_ok "can0 is up"
+    else
+        print_info "can0 exists but is down: bringing it up at 1 Mbit"
+        SUDO ip link set can0 up type can bitrate 1000000; SUDO ip link set can0 txqueuelen 1024
+        can_is_up && chk_ok "can0 is up now" || chk_fail "can0 would not come up"
+    fi
+    fill_blank_uuids
+    if [ "$(service_state klipper)" = active ]; then chk_warn "Klipper is already running: the CAN query is skipped (Klipper uses the bus)"
+    elif can_exists && can_is_up; then
+        local found; found="$(found_uuids_retry)"
+        if [ -z "$found" ]; then chk_fail "nothing answers on the CAN bus" "Main board powered? Toolhead hub powered? CAN cable?"
+        else
+            chk_ok "CAN devices answering: $(echo $found | tr ' ' ',')"
+            local mcu="$(cfg_dir)/wm_zru_mcu.cfg" have matched=0
+            have="$(awk '{print $2}' < <(cfg_uuids | grep "/wm_zru_mcu.cfg "))"
+            if [ -n "$(can_missing_devs "$found")" ] || ! echo "$found" | grep -qx "${have:-none}"; then   # an id in the config is not on the bus (placeholders always are): find every board by its firmware name
+                if can_match_boards; then matched=1; chk_ok "every board was found by its firmware name and its id written (copies: $BACKUP_ROOT/uuid-$STAMP). The tool head order is fixed by Extruder Setup right after Klipper starts."; fi
+            fi
+            if [ "$matched" = 1 ]; then :
+            elif [ -z "$have" ]; then chk_warn "wm_zru_mcu.cfg has no canbus_uuid"
+            elif echo "$found" | grep -qx "$have"; then chk_ok "main board uuid $have matches the config"
+            else fix_main_uuid "$have" "$found"; fi
+            local f u; while read -r f u; do
+                case "$f" in */wm_zru_mcu.cfg) continue ;; esac
+                if echo "$found" | grep -qx "$u"; then chk_ok "$(basename "$f"): $u is on the bus"
+                else
+                    chk_warn "$(basename "$f"): $u ($(can_dev_name "$f")) is not on the bus" "Not powered, its id in the config differs from the board's own, or the board is still assigned by an earlier Klipper session (power-cycle the printer's 24 V)."
+                    if fix_dev_uuid "$f" "$u" "$found" "$(can_missing_devs "$found" | grep -c .)"; then chk_ok "$(basename "$f") fixed"; fi
+                fi
+            done < <(cfg_uuids)
+            local nph; nph="$(cfg_uuids | awk '$2 ~ /^(0{11}[0-9a-f]|b[0-9a-f]0{10})$/ {n++} END {print n+0}')"
+            [ "$nph" = 0 ] || chk_fail "$nph board(s) still have a placeholder CAN id, so Klipper cannot connect to them" "Power-cycle the printer (24 V off and on, Pi stays on) so every board answers, then run ./installer.sh --can-ids. A known id: ./installer.sh --can-ids set T0 ac8b57e80210"
+        fi
+    fi
+    local p; p="$(power_flags)"; [ -z "$p" ] || [ "$p" = 0x0 ] && chk_ok "Pi power: no under-voltage" || chk_warn "Pi power/heat flags: $p" "Use the official power supply."
+    [ -n "$(api_get /server/info)" ] && chk_ok "Moonraker answers" || chk_fail "Moonraker does not answer" "journalctl -u moonraker -n 50"
+    [ "$(service_state nginx)" = active ] && chk_ok "nginx is running" || chk_fail "nginx is not running" "./installer.sh --repair"
+    return $CHK_FAIL
+}
+
+start_all_services() {
+    print_header "Enabling and starting the services"
+    local s
+    for s in moonraker nginx; do SUDO systemctl enable "$s"; done
+    if [ "$WANT_CROWSNEST" = 1 ] && { [ -f /etc/systemd/system/crowsnest.service ] || [ "$TESTING" = 1 ]; }; then
+        crowsnest_follow_camera || print_info "No camera found, so the webcam service stays off. Plug one in and run First start again."
+    fi
+    SUDO systemctl enable klipper; SUDO systemctl restart klipper
+    if [ "$TESTING" = 1 ] || [ "$DRY" = 1 ]; then print_success "Klipper enabled and started (test)"; [ "$DRY" = 1 ] || step_extruder_setup || true; return 0; fi
+    local st=""; wait_klipper_ready; st="$WAIT_ST"
+    if [ "$st" = error ] || [ "$st" = shutdown ]; then   # the throw-away connections of the board matching leave the main board in a shutdown state: one firmware restart clears it, so it is not reported as a failed start
+        echo "  Klipper is '$st' (normal after the board matching): restarting the firmware once ..."
+        curl -s -m 20 -X POST http://127.0.0.1:7125/printer/firmware_restart >/dev/null 2>&1; sleep 5
+        wait_klipper_ready; st="$WAIT_ST"
+    fi
+    case "$st" in
+        ready) print_success "Klipper is ready: the printer is connected." ;;
+        startup|"") print_warning "Klipper is still starting (state: ${st:-unknown}). Watch: journalctl -u klipper -f" ;;
+        *) print_warning "Klipper reports '$st'. Look at Fluidd or: journalctl -u klipper -n 40"; warn_later "Klipper state after start: $st" ;;
+    esac
+    step_extruder_setup || true   # only when the board matching wrote the tool head ids: required, the user can only accept the warning
+    if [ "$TESTING" != 1 ] && [ "$(klippy_state)" = ready ]; then   # the state may have changed since the check above: the last word is the state NOW
+        local keep=() w; for w in "${WARNINGS[@]}"; do case "$w" in "Klipper state after start:"*) ;; *) keep+=("$w") ;; esac; done; WARNINGS=("${keep[@]}")
+    fi
+}
+
+do_first_start() {
+    guard_not_printing
+    print_header "First start"
+    echo "The main board must be connected (docs/WIRING.md) and powered."
+    if hw_checks; then
+        print_success "All checks passed."
+        if [ "${1:-ask}" = auto ] || ask_yn "Enable Klipper and the other services and start them now?" y; then start_all_services; fi
+    elif [ "${1:-ask}" = auto ]; then
+        print_warning "$CHK_FAIL check(s) failed (listed above). The services are enabled anyway, as you asked; Klipper will report the problem until it is fixed."
+        warn_later "$CHK_FAIL check(s) failed at the end of the install. Fix them, then run ./installer.sh --first-start or ./installer.sh --doctor."
+        start_all_services
+    else
+        if [ "$(service_state klipper)" = active ]; then print_error "$CHK_FAIL check(s) failed. Klipper was already running and was left as it is."
+        else print_error "$CHK_FAIL check(s) failed, so Klipper was NOT started."; fi
+        echo "Fix the points above, then run: ./installer.sh --first-start    (./installer.sh --doctor explains and fixes common problems)"
+        return 1
+    fi
+}
+
+do_hw_test() {
+    print_header "Hardware test (read-only)"
+    hw_checks || true
+    print_header "Camera"
+    if ls /dev/v4l/by-id/*index0 >/dev/null 2>&1; then
+        local d; for d in /dev/v4l/by-id/*index0; do chk_ok "camera device: $d"; done
+        if [ "$(service_state crowsnest)" = active ]; then
+            local code; code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/?action=snapshot' 2>/dev/null)"
+            [ "$code" = 200 ] && chk_ok "crowsnest delivers a picture on port 8080" || chk_warn "crowsnest answered $code on port 8080" "Check the device line in ~/printer_data/config/crowsnest.conf"
+        else chk_warn "crowsnest is not running" "sudo systemctl start crowsnest"; fi
+    else chk_warn "no USB camera found in /dev/v4l/by-id" "Optional. Plug a camera in and run again."; fi
+    print_header "Serial devices"; ls /dev/serial/by-id 2>/dev/null | sed 's/^/  /' || true
+    echo; echo "Result: $CHK_FAIL failed, $CHK_WARN warnings. Nothing was changed except bringing can0 up."
+}
+
+# ============================================================================
+# Backup and restore of your printer settings
+# ============================================================================
+do_backup() {
+    local dir="${ARG1:-$WMB}" out
+    mkdir -p "$dir"; out="$dir/wm-backup-$(model_now)-$STAMP.tgz"
+    print_header "Backup of your printer settings"
+    why "Your calibration and config live only on this SD card. SD cards fail."
+    local items=() i
+    for i in printer_data/config printer_data/database printer_data/wm-model printer_data/wm-baseline TM_T1/factory_settings; do [ -e "$HOME_DIR/$i" ] && items+=("$i"); done
+    progress_bar 0 2 "Backup 1 of 2: packing your settings"
+    tar czf "$out" -C "$HOME_DIR" "${items[@]}" 2>/dev/null || die_with_fix "could not write the backup." "free disk space, or choose another folder: ./installer.sh --backup /path"
+    progress_bar 1 2 "Backup 2 of 2: protecting the file"
+    chmod 600 "$out"
+    progress_bar 2 2 "Done"
+    print_success "Saved $out ($(du -h "$out" | cut -f1))"
+    echo "  Copy it off the Pi (scp or a USB stick). It holds your private settings: do not publish it."
+}
+do_restore() {
+    local f="${ARG1:-}"; [ -f "$f" ] || die_with_fix "backup file not found: '$f'" "./installer.sh --restore /path/wm-backup-....tgz"
+    tar tzf "$f" 2>/dev/null | grep -q '^printer_data/config/printer.cfg$' || die_with_fix "this is not a backup made by --backup." "choose the right file."
+    guard_not_printing
+    print_header "Restore"
+    echo "This replaces ~/printer_data/config, the Moonraker database and (if the backup has it) WonderMaker's ~/TM_T1/factory_settings with the ones in the backup."
+    echo "A safety copy of the current ones is made first."
+    ask_yn "Continue?" n || { echo "Nothing changed."; return 0; }
+    ARG1="$WMB"; do_backup >/dev/null
+    local was_k=0; [ "$(service_state klipper)" = active ] && was_k=1
+    SUDO systemctl stop klipper; SUDO systemctl stop moonraker
+    tar xzf "$f" -C "$HOME_DIR" || die_with_fix "could not unpack the backup." "the safety copy is in ~/ultra-backup/settings"
+    SUDO systemctl start moonraker; [ "$was_k" = 1 ] && SUDO systemctl start klipper
+    [ -f "$(pidcfg_py)" ] && ! pidcfg_check >/dev/null && warn_later "The restored config keeps PID settings where Klipper cannot save a PID result (an included file sets them, or a hotend has no control: pid). Fix: ./installer.sh --pid-cfg"
+    print_success "Restored from $f. The previous settings are in ~/ultra-backup/settings (newest file)."
+}
+
+# ============================================================================
+# Update, repair, undo
+# ============================================================================
+auto_backup() {   # a quick safety copy of your settings before an update or an add-on install; the newest 5 are kept
+    if [ "${NO_BACKUP:-0}" = 1 ]; then print_info "Backup before the update skipped (--no-backup)."; return 0; fi
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would save a backup of your config, calibration, database and factory settings first${NC}"; return 0; }
+    local dir="$WMB" out items=() i
+    for i in printer_data/config printer_data/database printer_data/moonraker.asvc printer_data/wm-model printer_data/wm-baseline TM_T1/factory_settings; do [ -e "$HOME_DIR/$i" ] && items+=("$i"); done
+    [ ${#items[@]} -gt 0 ] || return 0
+    mkdir -p "$dir"; out="$dir/wm-backup-$(model_now)-before-update-$STAMP.tgz"
+    if tar czf "$out" -C "$HOME_DIR" "${items[@]}" 2>/dev/null; then
+        chmod 600 "$out"
+        print_success "Backup before the update: $out ($(du -h "$out" | cut -f1)). Put it back with: ./installer.sh --restore $out"
+        ls -1t "$dir"/wm-backup-*-before-update-*.tgz 2>/dev/null | tail -n +6 | while read -r o; do rm -f "$o"; done
+    else
+        rm -f "$out"; warn_later "The backup before the update could not be saved (disk full?). The update went on; save one yourself: ./installer.sh --backup"
+    fi
+}
+
+protect_py() { echo "$SCRIPT_DIR/scripts/wm_protect.py"; }
+protect_snapshot() {   # F-222: before any update step, remember what belongs to you (saved variables, rotation_distance, the SAVE_CONFIG block, crowsnest.conf)
+    PROTECT_SNAP=""
+    [ -f "$(protect_py)" ] && [ -d "$HOME_DIR/printer_data/config" ] || return 0
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would remember your saved variables, rotation_distance lines and SAVE_CONFIG block, and check them again at the end${NC}"; return 0; fi
+    local snap="$ULTRA/protect/$STAMP"; mkdir -p "$snap" && python3 -I "$(protect_py)" snapshot "$HOME_DIR/printer_data/config" "$snap" >/dev/null && PROTECT_SNAP="$snap"
+    ls -1dt "$ULTRA"/protect/*/ 2>/dev/null | tail -n +4 | while read -r o; do rm -rf "$o"; done
+}
+protect_verify() {   # F-222: before Klipper restarts, put back anything of yours that an update step changed
+    [ -n "${PROTECT_SNAP:-}" ] && [ -d "$PROTECT_SNAP" ] || return 0
+    local out rc; out="$(python3 -I "$(protect_py)" verify "$HOME_DIR/printer_data/config" "$PROTECT_SNAP" 2>&1)"; rc=$?
+    if [ "$rc" = 0 ]; then print_success "Your settings: untouched (saved variables, rotation_distance, SAVE_CONFIG block)"
+    elif [ "$rc" = 10 ]; then print_warning "The update changed some of your own values; they were put back:"; echo "$out" | sed 's/^/    /'; warn_later "The update changed some of your own values and put them back (see above). Nothing is lost; tell the maker if this repeats."
+    else warn_later "Could not check your own values after the update: $out"; fi
+}
+do_rollback() {   # F-222: undo the last update's settings: restore the newest backup that was saved before an update
+    local f; f="$(ls -1t "$WMB"/wm-backup-*-before-update-*.tgz 2>/dev/null | head -n1)"
+    [ -n "$f" ] || die_with_fix "there is no backup from before an update in $WMB." "an update saves one first; nothing to roll back to."
+    echo "The newest backup from before an update: $f"
+    ARG1="$f"; do_restore
+}
+do_update() {
+    print_header "Update"
+    load_answers || die_with_fix "nothing is installed by this installer yet, so there is nothing to update ($CONF is missing)." "run ./installer.sh and choose 1 (Install or reinstall). To get the newest installer files only: ./installer.sh --get-latest"
+    guard_not_printing
+    check_system; preflight; update_notice; devbox_notice
+    [ -d "$HOME_DIR/klipper" ] || die_with_fix "~/klipper is missing." "run ./installer.sh --doctor"
+    if [ -n "$ONLY_ADDON" ]; then echo "Only this add-on is installed. The system files, packages, Fluidd panel and nginx are not touched, and neither is your printer_data."
+    else echo "Your printer_data (config, calibration) is not touched, except: the Pi's own calibration macros file rpi_calibration.cfg from rpi-cfg (refreshed; an edited copy is kept)$([ "$WANT_ACEPRO" = 1 ] && echo ", and the ACE Pro files (rpi_ace_driver.cfg, rpi_ace.cfg, rpi_endless.cfg, rpi_stats.cfg) which the ACE Pro project's own updater rewrites (its settings are kept)"), plus the Fluidd update entries in moonraker.conf (a copy is kept). Updated: services, nginx, can0 rule, Python packages, the Fluidd panel, add-ons$([ "$WANT_ACEPRO" = 1 ] && echo ", the ACE Pro driver"). Klipper is restarted at the end."; fi
+    ask_yn "Go ahead?" y || exit 0
+    local UT=8
+    progress_bar 0 100 "Update step 1 of $UT: backup"
+    auto_backup
+    protect_snapshot
+    rpi_names_migrate
+    progress_bar 5 100 "Update step 2 of $UT: packages and Python"
+    if [ -z "$ONLY_ADDON" ]; then step_packages; step_groups; step_python; fi
+    progress_bar 20 100 "Update step 3 of $UT: Python packages"
+    if [ -z "$ONLY_ADDON" ] && [ "$TESTING" != 1 ] && [ "$DRY" != 1 ]; then
+        "$HOME_DIR/klippy-env/bin/pip" install -q -r "$SCRIPT_DIR/config/klippy-requirements.txt" || warn_later "klippy-env packages did not update."
+        "$HOME_DIR/moonraker-env/bin/pip" install -q -r "$SCRIPT_DIR/config/moonraker-requirements.txt" || warn_later "moonraker-env packages did not update."
+    fi
+    progress_bar 45 100 "Update step 4 of $UT: services, nginx, CAN"
+    if [ -z "$ONLY_ADDON" ]; then step_services_files; step_hostmcu; step_nginx; step_can; step_rpicfg; step_light; step_moonraker_tune; step_cfgmerge; step_macro_patches; step_pidcfg; step_wm_modules; step_wifi; step_logs; step_blackbox; fi
+    progress_bar 50 100 "Update step 5 of $UT: Fluidd panel"
+    if [ -z "$ONLY_ADDON" ] && [ "$WANT_PANEL" = 1 ]; then
+        local sha=""; panel_get && sha="$(sha256sum "$PANEL_ZIP" | cut -d' ' -f1)"
+        if [ -n "$sha" ] && [ "$sha" != "${OLD_PANEL_SHA:-}" ]; then step_panel; else print_success "Fluidd panel is already the latest"; fi
+    fi
+    progress_bar 55 100 "Update step 6 of $UT: touchscreen and add-ons"
+    if [ "$WANT_SCREEN" = 1 ] && upd_wants screen; then
+        if [ "$(addon_pin klipperscreen | cut -d'|' -f2)" != "${OLD_KS_PIN:-}" ] || [ ! -d "$KS_DIR" ]; then step_screen; else copy_zr_panel; print_success "ZR Tools screen files refreshed"; fi
+    fi
+    if [ "$WANT_SCREEN" = macros ] && upd_wants screen; then step_macros; fi
+    if [ "$WANT_NETMGR" = 1 ] && upd_wants network-manager; then step_netmgr; fi
+    if [ "$WANT_TIMELAPSE" = 1 ] && upd_wants timelapse; then step_timelapse; fi
+    if [ "$WANT_SHELLCMD" = 1 ] && upd_wants shell-command; then step_shellcmd; fi
+    if [ "$WANT_SHAKETUNE" = 1 ] && upd_wants shaketune; then step_shaketune; fi
+    if [ "$WANT_SPOOLMAN" = 1 ] && upd_wants spoolman; then step_spoolman; fi
+    if [ "$WANT_ACEPRO" = 1 ] && upd_wants acepro; then step_acepro; fi
+    progress_bar 80 100 "Update step 7 of $UT: remote access and webcam"
+    step_remote_update
+    if [ "$WANT_CROWSNEST" = 1 ] && upd_wants webcam && { [ "$(addon_pin crowsnest | cut -d'|' -f2)" != "${OLD_CN_PIN:-}" ] || [ ! -d "$HOME_DIR/crowsnest" ]; }; then step_crowsnest; fi
+    if [ "$WANT_CROWSNEST" = 1 ] && upd_wants webcam; then
+        if screen_cam_on; then screen_camera_apply   # the screen board camera: nginx follows the board's address, Fluidd lists it as Camera
+        elif [ -n "$(screen_cam_url)" ]; then print_info "The screen board announced a camera. To show it in Fluidd as Camera: ./installer.sh --webcam-setup (it asks if the factory camera is plugged into the screen board)."; fi
+    fi
+    moonraker_add_update_entries
+    step_pi_updater
+    step_panel_updater
+    save_answers
+    step_cfgindex
+    [ -n "$ONLY_ADDON" ] || step_ultrabackup   # last, after the panel and the add-ons: they write backups of their own (acepro-backup, fluidd_backup_*), and those are swept too
+    protect_verify
+    progress_bar 90 100 "Update step 8 of $UT: restart Klipper and self-test"
+    SUDO systemctl restart moonraker; [ -n "$ONLY_ADDON" ] || SUDO systemctl restart nginx
+    restart_klipper_after
+    pi_sensors_in_flow
+    self_test
+    if [ ${#WARNINGS[@]} -gt 0 ]; then local w; for w in "${WARNINGS[@]}"; do print_warning "$w"; done; fi   # the update used to hide these
+    progress_bar 100 100 "Update finished"
+    print_success "Update finished (installer $VERSION)."
+}
+# ---------------------------------------------------------------------------------------------------------------
+# Updates of everything this installer manages: the installer itself, the Fluidd panel (ACE Pro project) and the screen boards
+# ---------------------------------------------------------------------------------------------------------------
+BOARDS_FILE="$BACKUP_ROOT/boards.conf"      # one "user@host" per line: the screen boards this Pi may update over ssh
+wm_ssh() { ${WM_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$@"; }   # WM_SSH: test hook
+ver_newer() { [ -n "$1" ] && [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }   # $1 is a higher version than $2
+panel_installed_version() { head -n1 "$BACKUP_ROOT/panel.version" 2>/dev/null | tr -d '[:space:]'; }
+boards_list() { grep -vE '^[[:space:]]*(#|$)' "$BOARDS_FILE" 2>/dev/null; }
+print_active() {   # true while a print is running or paused (an update restarts Klipper)
+    local st; st="$(print_state 2>/dev/null)"
+    case "$st" in printing|paused) return 0 ;; *) return 1 ;; esac
+}
+git_fetch_quiet() { [ -n "${WM_TEST_NO_FETCH:-}" ] && return 0; timeout 60 git -C "$1" fetch --quiet 2>/dev/null; }
+panel_remote_version() {   # newest panel version on GitHub (after a fetch); '' when unknown
+    local d; d="$(ace_dir)"; [ -d "$d/.git" ] || return 0
+    git -C "$d" show "origin/main:VERSION" 2>/dev/null | head -n1 | tr -d '[:space:]'
+}
+board_version() {   # the screen files' version on a board
+    wm_ssh "$1" 'for f in ~/wm-screen-backup/version ~/WM_Ultra_Vanilla_Klipper/VERSION; do [ -f "$f" ] && { head -n1 "$f"; exit 0; }; done' 2>/dev/null | head -n1 | tr -d '[:space:]'
+}
+updates_summary() {   # prints the state of the panel and the boards; sets UPD_PANEL_NEW / UPD_BOARDS_NEW (counts of things that are behind). $1 = newest installer version
+    UPD_PANEL_NEW=0; UPD_BOARDS_NEW=0
+    local d pv rv t bv
+    d="$(ace_dir)"
+    if [ -d "$d/.git" ]; then
+        git_fetch_quiet "$d" || print_warning "Could not reach GitHub for the Fluidd panel."
+        pv="$(panel_installed_version)"; [ -n "$pv" ] || pv="$(tr -d '[:space:]' < "$d/VERSION" 2>/dev/null)"; rv="$(panel_remote_version)"
+        if ver_newer "$rv" "$pv"; then UPD_PANEL_NEW=1; echo "  Fluidd panel: installed $pv, on GitHub $rv  (newer)"; else echo "  Fluidd panel: installed ${pv:-unknown}, on GitHub ${rv:-unknown}"; fi
+    fi
+    while read -r t; do
+        [ -n "$t" ] || continue
+        bv="$(board_version "$t")"
+        if [ -z "$bv" ]; then echo "  Screen board $t: cannot be reached (is it on, and was the key set up with ./installer.sh --board add $t ?)"; continue; fi
+        if ver_newer "${1:-}" "$bv"; then UPD_BOARDS_NEW=$((UPD_BOARDS_NEW+1)); echo "  Screen board $t: installed $bv, latest ${1:-?}  (newer)"; else echo "  Screen board $t: installed $bv, latest ${1:-unknown}"; fi
+    done < <(boards_list)
+}
+
+do_check_updates() {   # read-only: the installer, the Fluidd panel and the screen boards against GitHub
+    check_installer_part || return $?
+    local newv=""
+    if [ -d "$REPO_DIR/.git" ]; then newv="$(git -C "$REPO_DIR" show origin/main:VERSION 2>/dev/null | head -n1 | tr -d '[:space:]')"; fi
+    [ -n "$newv" ] || newv="$VERSION"
+    updates_summary "$newv"
+    local behind=0; [ "$(ver_newer "$newv" "$VERSION" && echo y)" = y ] && behind=1
+    if [ "$behind" = 1 ] || [ "$UPD_PANEL_NEW" = 1 ] || [ "$UPD_BOARDS_NEW" -gt 0 ]; then
+        echo "  To update everything at once: ./installer.sh --update-all"
+    fi
+    return 0
+}
+board_from_light() {   # the screen board's address as the board itself announced it (rpi_chamber_light.json, written by the board install)
+    local u; u="$(light_url)"; u="${u#*://}"; u="${u%%[:/]*}"
+    [[ "$u" =~ ^[A-Za-z0-9.-]+$ ]] && echo "$u"
+}
+board_offer_add() {   # install / update: a screen board announced itself but this Pi does not update it yet
+    local h t; h="$(board_from_light)"; [ -n "$h" ] || return 0
+    t="t13dp@$h"; grep -qxF "$t" "$BOARDS_FILE" 2>/dev/null && return 0
+    if [ "$DRY" = 1 ] || [ ! -t 0 ] || [ "${WM_ASSUME_YES:-0}" = 1 ]; then
+        print_info "Screen board found at $h (it announced its chamber light). So this Pi can update it and keep its time zone: ./installer.sh --board add"; return 0
+    fi
+    ask_yn "Screen board found at $h. Add it, so this Pi can update it and keep its time zone the same? (asks the board's ssh password once)" y || { print_info "Later: ./installer.sh --board add"; return 0; }
+    BOARD_ACT=add; BOARD_TARGET="$t"; ( do_board ) || print_warning "The board was not added. Later: ./installer.sh --board add"
+}
+board_sync_tz() {   # a screen board takes this Pi's time zone (WonderMaker boards come with China time). $1 = user@host
+    local t="$1" pitz btz
+    if [ "$TESTING" = 1 ]; then pitz="${WM_TEST_TZ:-America/Toronto}"; else pitz="$(timedatectl show -p Timezone --value 2>/dev/null)"; fi
+    [[ "$pitz" =~ ^[A-Za-z0-9_+/-]+$ ]] || return 0
+    btz="$(wm_ssh "$t" 'timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone' 2>/dev/null | head -n1 | tr -d '[:space:]')"
+    [ -n "$btz" ] && [ "$btz" != "$pitz" ] || return 0
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would set the time zone of board $t to $pitz (now $btz)${NC}"; return 0; fi
+    if wm_ssh "$t" "sudo -n timedatectl set-timezone $pitz" >/dev/null 2>&1; then print_success "Board $t: time zone set to $pitz (was $btz), the same as this Pi"
+    else print_warning "Board $t is on time zone $btz, this Pi on $pitz. On the board run: bash ~/WM_Ultra_Vanilla_Klipper/scripts/screen_board.sh --set-tz $pitz"; fi
+}
+do_board() {   # --board add|remove|list [user@host]
+    mkdir -p "$BACKUP_ROOT"
+    case "$BOARD_ACT" in
+        list) if [ -n "$(boards_list)" ]; then echo "  Screen boards this Pi updates:"; boards_list | sed 's/^/    /'; else echo "  No screen board added. Add one with: ./installer.sh --board add t13dp@<board-ip>"; fi ;;
+        add)
+            if [ -z "$BOARD_TARGET" ]; then   # no address given: the one the screen board announced (rpi_chamber_light.json)
+                local found; found="$(board_from_light)"
+                [ -n "$found" ] || die_with_fix "no screen board address is known yet (the board has not announced itself)." "./installer.sh --board add t13dp@<board-ip>"
+                BOARD_TARGET="t13dp@$found"; print_info "Screen board found at $found (it announced its chamber light)."
+            fi
+            case "$BOARD_TARGET" in *@*) ;; *) die_with_fix "give the board as user@address." "./installer.sh --board add t13dp@<board-ip>" ;; esac
+            if [ "$TESTING" != 1 ] && ! wm_ssh "$BOARD_TARGET" true 2>/dev/null; then
+                [ -f "$HOME_DIR/.ssh/id_ed25519" ] || { mkdir -p "$HOME_DIR/.ssh"; chmod 700 "$HOME_DIR/.ssh"; ssh-keygen -q -t ed25519 -N '' -f "$HOME_DIR/.ssh/id_ed25519" -C "wm-pi-updater"; }
+                echo "  The board asks for its ssh password once, to accept this Pi's key (nothing else is changed on the board)."
+                ssh-copy-id -o StrictHostKeyChecking=accept-new "$BOARD_TARGET" || die_with_fix "the key could not be copied to $BOARD_TARGET." "check the address, that ssh is on, and the password."
+                wm_ssh "$BOARD_TARGET" true 2>/dev/null || die_with_fix "ssh to $BOARD_TARGET still asks for a password." "check ~/.ssh/authorized_keys on the board."
+            fi
+            grep -qxF "$BOARD_TARGET" "$BOARDS_FILE" 2>/dev/null || echo "$BOARD_TARGET" >> "$BOARDS_FILE"
+            board_sync_tz "$BOARD_TARGET"
+            print_success "Board $BOARD_TARGET added. Doctor and Update now include it; update it with ./installer.sh --update-boards" ;;
+        remove)
+            [ -n "$BOARD_TARGET" ] || die_with_fix "give the board to remove." "./installer.sh --board remove t13dp@<board-ip>"
+            if [ -f "$BOARDS_FILE" ]; then grep -vxF "$BOARD_TARGET" "$BOARDS_FILE" > "$BOARDS_FILE.new"; mv "$BOARDS_FILE.new" "$BOARDS_FILE"; fi
+            print_success "Board $BOARD_TARGET removed from the list (its key stays on the board)." ;;
+        *) die_with_fix "--board needs add, remove or list." "./installer.sh --board list" ;;
+    esac
+}
+do_update_boards() {   # runs the board's own Update (the same root copy the Update button on its screen runs)
+    print_header "Update the screen boards"
+    local t n=0 bad=0
+    [ -n "$(boards_list)" ] || { echo "  No screen board added (./installer.sh --board add user@host). Nothing to do."; return 0; }
+    if print_active; then print_warning "A print is running or paused: the boards are not updated now (their update restarts Klipper)."; return 1; fi
+    local newv="$VERSION"
+    if [ -d "$REPO_DIR/.git" ]; then newv="$(git -C "$REPO_DIR" show origin/main:VERSION 2>/dev/null | head -n1 | tr -d '[:space:]')"; [ -n "$newv" ] || newv="$VERSION"; fi
+    while read -r t; do
+        [ -n "$t" ] || continue
+        local bv; bv="$(board_version "$t")"
+        if [ -z "$bv" ]; then print_warning "Board $t cannot be reached over ssh: skipped."; bad=$((bad+1)); continue; fi
+        board_sync_tz "$t"
+        if ! ver_newer "$newv" "$bv"; then print_success "Board $t is up to date ($bv)."; continue; fi
+        if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would update board $t from $bv to $newv${NC}"; continue; fi
+        if wm_ssh "$t" 'sudo -n /usr/local/sbin/wm-factory-restore --update --yes --detach' 2>&1 | tail -n 3; [ "${PIPESTATUS[0]}" = 0 ]; then
+            print_success "Board $t: update started ($bv -> $newv). Its screen restarts by itself in about a minute."; n=$((n+1))
+        else print_warning "Board $t: the update did not start. On the board run once: bash ~/WM_Ultra_Vanilla_Klipper/scripts/screen_board.sh --post-update"; bad=$((bad+1)); fi
+    done < <(boards_list)
+    [ "$bad" = 0 ]
+}
+do_update_all() {   # download everything newer, apply it, then update the boards
+    print_header "Update everything (installer, Fluidd panel, screen boards)"
+    command -v git >/dev/null 2>&1 || die_with_fix "git is not installed." "sudo apt-get install git"
+    load_answers || die_with_fix "nothing is installed by this installer yet." "run ./installer.sh first."
+    if print_active; then die_with_fix "a print is running or paused." "update after the print: ./installer.sh --update-all"; fi
+    local d; d="$(ace_dir)"
+    if [ -d "$REPO_DIR/.git" ]; then git -C "$REPO_DIR" pull -q --ff-only 2>/dev/null && print_success "Installer files are current." || print_warning "Could not update $REPO_DIR (network, or local changes). Using the copy that is there."; fi
+    if [ -d "$d/.git" ]; then git -C "$d" pull -q --ff-only 2>/dev/null && print_success "Fluidd panel files are current." || print_warning "Could not update $d (network, or local changes). Using the copy that is there."; fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run ./installer.sh --update --yes with the new files, then update the screen boards${NC}"; return 0; fi
+    local rc=0
+    bash "$REPO_DIR/installer.sh" --update --yes || rc=$?
+    [ "$rc" = 0 ] || { print_error "The update stopped (exit $rc). The boards were not touched."; return "$rc"; }
+    bash "$REPO_DIR/installer.sh" --update-boards || rc=$?
+    return "$rc"
+}
+
+check_installer_part() {   # read-only: compares this copy of the repository with GitHub
+    print_header "Check for updates (read-only, changes nothing)"
+    command -v git >/dev/null 2>&1 || die_with_fix "git is not installed." "sudo apt-get install git"
+    if [ ! -d "$REPO_DIR/.git" ]; then   # a tar download: compare the version numbers
+        local nv; nv="$( [ -n "${WM_TEST_NEW_VERSION:-}" ] && echo "$WM_TEST_NEW_VERSION" || curl -fsSL -m 20 https://raw.githubusercontent.com/ducati1198/WM_Ultra_Vanilla_Klipper/main/VERSION 2>/dev/null | head -1 )"
+        echo "  Your copy:   installer $VERSION"
+        [ -n "$nv" ] || die_with_fix "could not reach GitHub." "connect the Pi to the internet and try again."
+        echo "  On GitHub:   installer $nv"
+        [ "$nv" = "$VERSION" ] && print_success "You have the latest version." || echo "  To update:   ./installer.sh --get-latest   (or menu: Update)"
+        return 0
+    fi
+    local g=(git -C "$REPO_DIR") up
+    if [ -n "${WM_TEST_NO_FETCH:-}" ]; then :; else
+        timeout 60 "${g[@]}" fetch --quiet 2>/dev/null || die_with_fix "could not reach GitHub." "connect the Pi to the internet and try again."
+    fi
+    up="$("${g[@]}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"
+    [ -n "$up" ] || up="origin/main"
+    "${g[@]}" rev-parse --verify -q "$up" >/dev/null || die_with_fix "no remote branch '$up' to compare with." "git -C $REPO_DIR remote -v"
+    local behind newv
+    behind="$("${g[@]}" rev-list --count "HEAD..$up" 2>/dev/null)"
+    newv="$("${g[@]}" show "$up:VERSION" 2>/dev/null | head -1)"
+    echo "  Your copy:   installer $VERSION"
+    [ -n "$newv" ] && echo "  On GitHub:   installer $newv"
+    if [ "${behind:-0}" = 0 ]; then print_success "You have the latest version."; return 0; fi
+    print_info "$behind new change(s) on GitHub:"
+    "${g[@]}" --no-pager log --no-color --format='    %h  %s' -n 15 "HEAD..$up"
+    [ "$behind" -gt 15 ] && echo "    ... and $((behind - 15)) more"
+    if [ -n "$("${g[@]}" status --porcelain 2>/dev/null)" ]; then print_warning "You have local changes in $REPO_DIR; git pull may refuse until you save or discard them."; fi
+    echo "  To update:   cd $REPO_DIR && git pull && ./installer.sh --update"
+    return 0
+}
+repair_factory_files() {   # a git clone whose factory/ files were deleted or changed (for example by a wipe of the home folder): offer to restore them
+    [ "$DRY" = 1 ] && return 0
+    [ -d "$REPO_DIR/.git" ] && command -v git >/dev/null 2>&1 || return 0
+    local n; n="$(git -C "$REPO_DIR" status --porcelain -- factory 2>/dev/null | wc -l)"
+    [ "${n:-0}" -gt 0 ] || return 0
+    print_warning "$n factory file(s) in $REPO_DIR are missing or changed (the copy is damaged)."
+    if ask_yn "Restore them from the downloaded version (git checkout -- factory)? Your own changes in factory/ are lost." y; then
+        git -C "$REPO_DIR" checkout -- factory && print_success "Factory files restored." || warn_later "Could not restore the factory files. Try: cd $REPO_DIR && git checkout -- factory"
+    fi
+}
+do_zr_tools() {   # ZR Tools macros on this Pi (for the WonderMaker screen board): check first, install only when something is missing
+    print_header "ZR Tools macros (for the screen board)"
+    why "The ZR Tools page on the screen board sends commands such as ZR_SET_TOOL_INFO and ZR_LOAD to Klipper. They are macros in zr_tools.cfg, which printer.cfg must include, and they keep their data in [save_variables]."
+    progress_bar 0 3 "ZR Tools 1 of 3: looking at printer.cfg"
+    [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] || die_with_fix "there is no printer.cfg on this Pi yet." "install first (menu 1), then run this again."
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would check zr_tools.cfg, the include line and [save_variables], and add what is missing${NC}"; return 0; fi
+    progress_bar 1 3 "ZR Tools 2 of 3: checking and installing what is missing"
+    local out rc; out="$(HOME="$HOME_DIR" ZR_SRC="$REPO_DIR/zr_tools" ZR_NO_RESTART=1 ZR_PRINT_STATE="$( [ "$TESTING" = 1 ] && echo "${WM_TEST_PRINT_STATE:-standby}" )" bash "$REPO_DIR/zr_tools/ensure_zr_tools_pi.sh" 2>&1)"; rc=$?
+    echo "$out" | grep -v '^ZR_RESULT='
+    case "$out" in
+        *ZR_RESULT=already*) progress_bar 3 3 "Done"; print_success "ZR Tools macros are already installed on this Pi." ;;
+        *ZR_RESULT=installed*) progress_bar 3 3 "Done"; print_success "ZR Tools macros installed and configured."; restart_klipper_after ;;
+        *ZR_RESULT=printing*) print_warning "A print is running or paused. Try again when it is done."; return 1 ;;
+        *) print_error "The ZR Tools macros could not be installed (see above)."; return 1 ;;
+    esac
+}
+
+restart_klipper_after() {   # after an install or update: restart Klipper so it loads everything new, then wait for "ready"
+    [ "$DRY" = 1 ] && return 0
+    if [ "$(service_state klipper)" != active ]; then
+        print_info "Klipper is not running, so it was not restarted. It starts with: ./installer.sh --first-start (after the main board is connected)."; return 0
+    fi
+    print_header "Restarting Klipper"
+    SUDO systemctl restart klipper
+    [ "$TESTING" = 1 ] && { print_success "Klipper restarted (test)"; return 0; }
+    if wait_klipper_ready; then print_success "Klipper restarted and is ready."
+    else case "$WAIT_ST" in
+        error|shutdown) print_warning "Klipper restarted but reports '$WAIT_ST'. Look at the message in Fluidd, or: ./installer.sh --doctor" ;;
+        *) print_warning "Klipper restarted but is not ready yet (state: ${WAIT_ST:-unknown}). Watch: journalctl -u klipper -f" ;;
+    esac; fi
+}
+# ============================================================================
+# Free up disk space
+# ============================================================================
+FREE_NEED_MB=2500
+FS_LOGS_DIR="$HOME_DIR/printer_data/logs"
+# shared with scripts/screen_board.sh
+# shellcheck source=scripts/lib_free_space.sh
+. "$SCRIPT_DIR/scripts/lib_free_space.sh" || { echo "scripts/lib_free_space.sh is missing; run: ./installer.sh --get-latest"; exit 1; }
+disk_free_mb() { [ "$TESTING" = 1 ] && { echo "${WM_TEST_DISK_MB:-4000}"; return; }; df -Pm "$HOME_DIR" | awk 'NR==2{print $4}'; }
+do_get_latest() {   # download the newest version of this installer folder; git pull in a clone, the GitHub tarball otherwise (no git needed)
+    print_header "Get the newest installer"
+    local new w=""
+    _rmw() { [ -n "${WM_TEST_UPDATE_DIR:-}" ] || { [ -n "$w" ] && rm -rf "$w"; }; trap - INT TERM; return 0; }   # the downloaded copy (about 50 MB) never stays in /tmp
+    if [ -d "$REPO_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+        local g=(git -C "$REPO_DIR")
+        [ -n "${WM_TEST_NO_FETCH:-}" ] || timeout 60 "${g[@]}" fetch --quiet 2>/dev/null || die_with_fix "could not reach GitHub." "connect the Pi to the internet and try again."
+        new="$("${g[@]}" show "origin/main:VERSION" 2>/dev/null | head -1)"
+        echo "  Your copy: $VERSION    On GitHub: ${new:-unknown}"
+        if [ -z "$("${g[@]}" rev-list "HEAD..origin/main" 2>/dev/null)" ]; then print_success "Already up to date."; return 0; fi
+        ask_yn "Download the new version now (git pull)?" y || { echo "Nothing changed."; return 1; }
+        [ "$DRY" = 1 ] && { echo -e "  ${DIM}would run: git pull --ff-only${NC}"; return 0; }
+        "${g[@]}" pull --ff-only || die_with_fix "git pull failed." "save or discard local changes in $REPO_DIR and try again."
+        print_success "Downloaded."; return 0
+    fi
+    if [ -n "${WM_TEST_UPDATE_DIR:-}" ]; then w="$WM_TEST_UPDATE_DIR"
+    else
+        w="$(mktemp -d)"; trap '_rmw; exit 130' INT TERM; print_info "Downloading the newest version from GitHub ..."
+        curl -fsSL -m 180 https://codeload.github.com/ducati1198/WM_Ultra_Vanilla_Klipper/tar.gz/refs/heads/main | tar -xz --strip-components=1 -C "$w" || { _rmw; die_with_fix "could not download the update." "connect the Pi to the internet and try again."; }
+    fi
+    new="$(head -1 "$w/VERSION" 2>/dev/null)"; [ -n "$new" ] && [ -f "$w/installer.sh" ] || { _rmw; die_with_fix "the download is not a complete installer." "try again later."; }
+    echo "  Your copy: $VERSION    On GitHub: $new"
+    if [ "$new" = "$VERSION" ]; then print_success "Already up to date."; _rmw; return 0; fi
+    echo "  This folder is not a git clone. The files in $REPO_DIR are replaced by the new ones; your printer data is not touched."
+    ask_yn "Replace them now?" y || { echo "Nothing changed."; _rmw; return 1; }
+    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would copy the new files over $REPO_DIR${NC}"; _rmw; return 0; }
+    cp -a "$w"/. "$REPO_DIR"/ || { _rmw; die_with_fix "could not copy the new files into $REPO_DIR." "check the folder permissions."; }
+    _rmw
+    print_success "Installer folder updated to $new."
+}
+do_repair() {
+    print_header "Repair"
+    why "Restores groups, service files, nginx and the can0 rule. Your data and the enabled/disabled state of Klipper are not touched."
+    guard_not_printing
+    load_answers || true
+    step_groups; step_services_files; step_polkit; step_nginx; step_can
+    [ "$WANT_SCREEN" = 1 ] && [ -d "$KS_DIR" ] && copy_zr_panel
+    SUDO systemctl restart moonraker
+    self_test; print_success "Repaired."
+}
+do_undo() {
+    print_header "Undo"
+    local dir="${ARG1:-$(ls -d "$BACKUP_ROOT"/old-* 2>/dev/null | sort | tail -1)}"
+    [ -n "$dir" ] && [ -d "$dir" ] || die_with_fix "no saved folders found in $BACKUP_ROOT." "nothing to undo."
+    local stampname; stampname="$(basename "$dir" | sed 's/^old-//')"
+    echo "This puts back the folders that the installer moved aside on $stampname:"; ls "$dir" | sed 's/^/  ~\//'
+    echo "The folders that are there now are moved to $BACKUP_ROOT/undone-$STAMP/."
+    echo "System services and nginx files are not changed (use --uninstall for those)."
+    guard_not_printing
+    ask_yn "Continue?" n || { echo "Nothing changed."; return 0; }
+    SUDO systemctl stop klipper; SUDO systemctl stop moonraker
+    local d had_fluidd=0; mkdir -p "$BACKUP_ROOT/undone-$STAMP"
+    [ -e "$dir/fluidd" ] && had_fluidd=1   # asked before the loop moves it: after the move the folder is gone and the Fluidd backup would overwrite the one just put back
+    for d in $(ls "$dir"); do
+        [ -e "$HOME_DIR/$d" ] && mv "$HOME_DIR/$d" "$BACKUP_ROOT/undone-$STAMP/$d"
+        mv "$dir/$d" "$HOME_DIR/$d"; print_success "~/$d restored"
+    done
+    local fl="$BACKUP_ROOT/fluidd-$stampname"
+    if [ -d "$fl" ] && [ "$had_fluidd" = 0 ] && ask_yn "Also put back the Fluidd that was replaced?" y; then
+        [ -e "$HOME_DIR/fluidd" ] && mv "$HOME_DIR/fluidd" "$BACKUP_ROOT/undone-$STAMP/fluidd"
+        mkdir -p "$HOME_DIR/fluidd"; cp -a "$fl/." "$HOME_DIR/fluidd/"; print_success "~/fluidd restored"
+    fi
+    SUDO systemctl start moonraker
+    print_success "Done. To go forward again, the folders from this undo are in $BACKUP_ROOT/undone-$STAMP/."
+}
+
+self_test() {
+    print_header "Self-test"
+    local w=0; while [ -z "$(api_get /server/info)" ] && [ "$TESTING" != 1 ] && [ "$DRY" != 1 ] && [ "$w" -lt 15 ]; do sleep 2; w=$((w+1)); done   # Moonraker needs up to 30 s after a restart
+    [ -n "$(api_get /server/info)" ] && print_success "Moonraker answers on port 7125" || print_warning "Moonraker did not answer (waited 30 s). Look at: journalctl -u moonraker -n 50"
+    if [ "$TESTING" = 1 ]; then print_success "web page answers (test)"; else
+        local c; c="$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1/ 2>/dev/null)"
+        [ "$c" = 200 ] && print_success "Fluidd answers on port 80" || print_warning "Fluidd/nginx answered '$c' on port 80"
+        c="$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1/server/info 2>/dev/null)"
+        [ "$c" = 200 ] && print_success "nginx forwards the API to Moonraker" || print_warning "the API through nginx answered '$c'"
+    fi
+    local k; k="$(klippy_state)"; print_info "Klipper state: ${k:-not running}"
+    polkit_check_and_fix
+}
+
+# ============================================================================
+# Doctor and support bundle
+# ============================================================================
+offer_fix() {  # description, command...
+    local d="$1"; shift
+    if [ "${DOC_FIXALL:-0}" = 1 ] || ask_yn "  Fix: $d?" y; then "$@" && print_success "done" || print_warning "the fix did not work"; fi
+}
+doc_ok()  { echo -e "  ${GREEN}[ok]${NC}      $1"; }
+doc_bad() { echo -e "  ${RED}[problem]${NC} $1"; echo -e "            ${DIM}$2${NC}"; DOC_PROBLEMS=$((DOC_PROBLEMS+1)); }
+doc_updates() {   # doctor: is a newer installer, Fluidd panel or screen board on GitHub? (needs the internet; skipped quietly without it)
+    [ "$TESTING" = 1 ] && [ -z "${WM_TEST_UPDATES:-}" ] && return 0
+    [ -d "$REPO_DIR/.git" ] || return 0
+    local newv="" pv rv d t bv behind=0
+    if git_fetch_quiet "$REPO_DIR"; then
+        newv="$(git -C "$REPO_DIR" show origin/main:VERSION 2>/dev/null | head -n1 | tr -d '[:space:]')"
+        if ver_newer "$newv" "$VERSION"; then doc_bad "a newer installer is on GitHub ($VERSION -> $newv)" "Update with ./installer.sh --update-all, or Fluidd's / the screen's Update button."; behind=1
+        else doc_ok "installer $VERSION is the newest on GitHub"; fi
+    else echo -e "  ${DIM}[skip]    GitHub could not be reached: updates not checked${NC}"; return 0; fi
+    d="$(ace_dir)"
+    if [ -d "$d/.git" ] && git_fetch_quiet "$d"; then
+        pv="$(panel_installed_version)"; [ -n "$pv" ] || pv="$(tr -d '[:space:]' < "$d/VERSION" 2>/dev/null)"; rv="$(panel_remote_version)"
+        if ver_newer "$rv" "$pv"; then doc_bad "a newer Fluidd panel is on GitHub ($pv -> $rv)" "Update with ./installer.sh --update-all, or the panel's Update button in Fluidd."; behind=1
+        else doc_ok "Fluidd panel ${pv:-unknown} is the newest on GitHub"; fi
+    fi
+    while read -r t; do
+        [ -n "$t" ] || continue
+        bv="$(board_version "$t")"
+        if [ -z "$bv" ]; then doc_bad "screen board $t cannot be reached over ssh" "Check that it is on; set the key up again with ./installer.sh --board add $t"
+        elif ver_newer "$newv" "$bv"; then doc_bad "screen board $t is behind ($bv, latest $newv)" "Update with ./installer.sh --update-boards (or --update-all)."; behind=1
+        else doc_ok "screen board $t has $bv (newest)"; fi
+        if [ -n "$bv" ]; then
+            local btz pitz; pitz="$( [ "$TESTING" = 1 ] && echo "${WM_TEST_TZ:-America/Toronto}" || timedatectl show -p Timezone --value 2>/dev/null)"
+            btz="$(wm_ssh "$t" 'timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone' 2>/dev/null | head -n1 | tr -d '[:space:]')"
+            if [ -n "$btz" ] && [ -n "$pitz" ] && [ "$btz" != "$pitz" ]; then doc_bad "screen board $t is on time zone $btz, this Pi on $pitz" "./installer.sh --update-boards sets the board to the Pi's zone (or on the board: bash scripts/screen_board.sh --set-tz $pitz)."; fi
+        fi
+    done < <(boards_list)
+    [ "$behind" = 1 ] && offer_fix "update everything now (installer, Fluidd panel, screen boards; a backup is taken first)" bash "$REPO_DIR/installer.sh" --update-all
+    return 0
+}
+do_doctor() {
+    DOC_PROBLEMS=0
+    load_answers || true
+    print_header "Doctor (asks before changing anything)"
+    devbox_notice
+    doc_updates
+    rpi_old_names_present && doc_bad "config files still have the old wm_ names (wm_calibration.cfg ...)" "Run ./installer.sh --update: it renames them to rpi_ (copies first) and changes the include lines in printer.cfg."
+    if [ "${FIXALL:-0}" = 1 ]; then
+        echo "  Fix everything: every problem the Doctor finds is fixed with its normal safe fix (the same fixes it would offer one by one). Your printer data is not touched."
+        ask_yn "Apply every fix without asking again?" n && DOC_FIXALL=1 || echo "  Normal mode: the Doctor asks before each fix."
+    fi
+    [ "$(id -un)" = "$WM_USER" ] || [ "$TESTING" = 1 ] && doc_ok "user is $WM_USER" || doc_bad "user is $(id -un), not $WM_USER" "WonderMaker's paths are fixed to /home/$WM_USER. Log in as $WM_USER."
+    progress_bar 0 5 "Doctor 1 of 5: folders"
+    local d dl="klipper moonraker printer_data fluidd klippy-env moonraker-env"; [ "$TESTING" = 1 ] && dl="klipper moonraker printer_data fluidd"
+    for d in $dl; do
+        [ -d "$HOME_DIR/$d" ] && doc_ok "~/$d" || doc_bad "~/$d is missing" "Run ./installer.sh (or ./installer.sh --undo if a run was interrupted)."
+    done
+    if [ "$TESTING" != 1 ] && [ -x "$HOME_DIR/klippy-env/bin/python" ]; then
+        "$HOME_DIR/klippy-env/bin/python" -c 'import can,serial,cffi,greenlet,jinja2,numpy' 2>/dev/null && doc_ok "Klipper's Python packages import" \
+            || { doc_bad "Klipper's Python packages do not import" "The environment is damaged or incomplete."; offer_fix "rebuild ~/klippy-env" bash -c "rm -rf '$HOME_DIR/klippy-env'; true"; step_python; step_venvs; }
+    fi
+    if [ "$WANT_SHELLCMD" = 1 ]; then
+        cmp -s "$SCRIPT_DIR/config/gcode_shell_command.py" "$HOME_DIR/klipper/klippy/extras/gcode_shell_command.py" 2>/dev/null && doc_ok "gcode_shell_command extension is installed" \
+            || { doc_bad "gcode_shell_command extension is missing or different" "RUN_SHELL_COMMAND will not work (Klipper stops at start if printer.cfg has a [gcode_shell_command] section)."; offer_fix "copy it again" step_shellcmd; }
+    fi
+    progress_bar 1 5 "Doctor 2 of 5: programs"
+    local rp rn rv rdir rsvc
+    for rp in "Obico:WANT_OBICO:moonraker-obico:moonraker-obico" "OctoApp:WANT_OCTOAPP:octoapp:octoapp" "OctoEverywhere:WANT_OCTOEVERYWHERE:octoeverywhere:octoeverywhere"; do
+        IFS=: read -r rn rv rdir rsvc <<< "$rp"
+        [ "${!rv}" = 1 ] || continue
+        if [ ! -d "$HOME_DIR/$rdir" ]; then doc_bad "$rn is missing (~/$rdir)" "Run ./installer.sh --update --$(echo "$rn" | tr 'A-Z' 'a-z') on."
+        elif [ "$TESTING" = 1 ]; then doc_ok "$rn is downloaded"
+        elif [ "$(service_state "$rsvc")" = active ]; then doc_ok "$rn is running"
+        else doc_bad "$rn is downloaded but its service is not running" "Finish its installer: cd ~/$rdir && ./install.sh   (Obico: ~/moonraker-obico/scripts/link.sh -c ~/printer_data/config/moonraker-obico.cfg)"; fi
+    done
+    if [ "$WANT_SPOOLMAN" = 1 ]; then
+        if [ ! -d "$HOME_DIR/Spoolman" ]; then doc_bad "Spoolman is missing (~/Spoolman)" "Run ./installer.sh --update --spoolman on."
+        elif [ "$TESTING" = 1 ]; then doc_ok "Spoolman is downloaded"
+        elif [ "$(service_state Spoolman)" = active ]; then doc_ok "Spoolman is running"
+        else doc_bad "Spoolman is downloaded but its service is not running" "journalctl -u Spoolman -n 30"; offer_fix "start Spoolman" bash -c "sudo systemctl enable --now Spoolman"; fi
+    fi
+    if [ "$WANT_ACEPRO" = 1 ]; then
+        if [ ! -d "$(ace_dir)" ]; then doc_bad "the ACE Pro project is missing (~/wm-ultra-fluidd-acepro-panel)" "Klipper's ACE driver is linked from that folder."; offer_fix "download it and install the ACE Pro driver and config" step_acepro
+        elif ! ace_installed || [ ! -L "$HOME_DIR/klipper/klippy/extras/ace" ]; then doc_bad "the ACE Pro driver or its config is not set up (rpi_ace.cfg, the include line or the link in Klipper's extras)" "The ACE Pro does not work until it is."; offer_fix "run the ACE Pro installer again" step_acepro
+        else doc_ok "ACE Pro driver and config are in place"; fi
+    fi
+    if [ "$WANT_SHAKETUNE" = 1 ]; then
+        if [ ! -d "$HOME_DIR/klippain_shaketune" ]; then doc_bad "Shake&Tune is missing" "Run ./installer.sh --update --shaketune on."
+        else doc_ok "Shake&Tune is installed"; fi
+    fi
+    if [ "$WANT_CROWSNEST" = 1 ] && [ -d "$HOME_DIR/crowsnest" ]; then
+        if camera_present; then
+            [ "$(service_state crowsnest)" = active ] && doc_ok "webcam service is running" || { doc_bad "a camera is plugged in but the webcam service is not running" "No picture in Fluidd."; offer_fix "start the webcam service" bash -c "sudo systemctl enable --now crowsnest"; }
+        else doc_ok "webcam service is waiting for a camera (none plugged in)"; fi
+    fi
+    progress_bar 2 5 "Doctor 3 of 5: modules and printer config"
+    local miss; miss="$(modules_present | tr '\n' ' ')"
+    if [ -z "$miss" ]; then doc_ok "WonderMaker's compiled modules are present"
+    else doc_bad "missing modules: $miss" "Klipper cannot run the heaters, load cells or calibration without them."; offer_fix "copy the factory modules from this repository (checksums are verified)" restore_modules_from_repo; fi
+    local nerr=0; validate_config > /tmp/.wm_d.$$ 2>&1 || nerr=$?; sed 's/^/        /' /tmp/.wm_d.$$; rm -f /tmp/.wm_d.$$
+    if [ "$nerr" = 0 ]; then doc_ok "printer.cfg and includes"; else
+        doc_bad "printer.cfg has $nerr problem(s) (listed above)" "A missing include stops Klipper at start. A wrong zru-s.cfg line means the chamber/air-filter settings do not match your model."
+        grep -q 'zru-s.cfg' < <(validate_config 2>&1) && offer_fix "set printer.cfg for the $(model_now)" step_model
+    fi
+    local rf; for rf in $(rpicfg_list); do
+        if [ ! -f "$HOME_DIR/printer_data/config/$rf" ]; then doc_bad "the Pi's $(rpicfg_role "$rf" name) file $rf is missing" "$(rpicfg_role "$rf" effect). It comes from the repository folder rpi-cfg."; offer_fix "copy $rf from rpi-cfg and include it in printer.cfg" step_rpicfg
+        elif ! rpicfg_included "$rf"; then doc_bad "printer.cfg does not include $rf ($(rpicfg_role "$rf" name))" "Klipper does not load it: $(rpicfg_role "$rf" effect)."; offer_fix "add the include line for $rf" step_rpicfg
+        elif ! cmp -s "$SCRIPT_DIR/rpi-cfg/$rf" "$HOME_DIR/printer_data/config/$rf"; then doc_bad "$rf differs from the one in rpi-cfg (edited, or an older version)" "Fixing replaces it with the repository version; your copy is kept as $rf.wm-before-rpicfg-<time>."; offer_fix "replace $rf with the version from rpi-cfg" step_rpicfg
+        else doc_ok "$(rpicfg_role "$rf" name) $rf (included in printer.cfg, same as rpi-cfg)"; fi
+        if [ "$rf" = rpi_nozzle.cfg ] && [ -f "$HOME_DIR/printer_data/config/$rf" ]; then
+            if cmp -s "$SCRIPT_DIR/scripts/wm_nozzle.py" "$(nozzle_script_dst)" 2>/dev/null; then doc_ok "wm_nozzle.py (the helper behind _WM_NOZZLE_TYPE) is in place"
+            else doc_bad "wm_nozzle.py is missing or different in ~/printer_data/wm-tools" "_WM_NOZZLE_TYPE could not write the nozzle diameter."; offer_fix "copy wm_nozzle.py again" step_rpicfg; fi
+            if cmp -s "$SCRIPT_DIR/scripts/wm_estep.py" "$(estep_script_dst)" 2>/dev/null; then doc_ok "wm_estep.py (the helper behind WM_ESTEP_CAL) is in place"
+            else doc_bad "wm_estep.py is missing or different in ~/printer_data/wm-tools" "WM_ESTEP_CAL could not save the new rotation_distance."; offer_fix "copy wm_estep.py again" step_rpicfg; fi
+            if cmp -s "$SCRIPT_DIR/scripts/wm_canids.py" "$(canids_script_dst)" 2>/dev/null; then doc_ok "wm_canids.py (the helper behind WM_EXTRUDER_SETUP) is in place"
+            else doc_bad "wm_canids.py is missing or different in ~/printer_data/wm-tools" "WM_EXTRUDER_SETUP could not write the CAN ids."; offer_fix "copy wm_canids.py again" step_rpicfg; fi
+        fi
+    done
+    if [ -f "$HOME_DIR/printer_data/config/rpi_pi.cfg" ]; then
+        rpicfg_included rpi_pi.cfg && doc_ok "rpi_pi.cfg (host MCU, temperatures, chamber light: $(python3 -I "$(rpipi_py)" parts "$HOME_DIR/printer_data/config" 2>/dev/null)) is included" || { doc_bad "rpi_pi.cfg is not included in printer.cfg" "The Pi temperature, the board temperatures, the host MCU and WM_CHAMBER_LIGHT are missing."; offer_fix "include rpi_pi.cfg" rpipi_step; }
+    fi
+    if rpicfg_included rpi_base.cfg && grep -qE '^\[(homing_override|idle_timeout|gcode_macro z_rise)\]' "$HOME_DIR/printer_data/config/printer.cfg" 2>/dev/null; then
+        doc_bad "printer.cfg still has its own homing / idle timeout sections, and rpi_base.cfg has them too" "They live in rpi_base.cfg; the ones in printer.cfg win. Run ./installer.sh --cfg-merge to take them out of printer.cfg (it asks first)."
+    fi
+    if [ -f "$(canmatch_pending)" ]; then
+        doc_bad "Extruder Setup has not been done since the CAN ids were found by firmware name: the tool head ids may be in the wrong order" "Hang all four tool heads in their docks first. It picks up T0 to T3 and puts the ids in dock order."
+        offer_fix "run Extruder Setup now (the printer moves: all four tool heads must hang in their docks)" step_extruder_setup
+    fi
+    if [ -n "$(wifi_dev)" ] && nm_active; then
+        if wifi_ok; then doc_ok "Wi-Fi: power saving is off"
+        else doc_bad "Wi-Fi: power saving is on, or an old Wi-Fi watchdog is still installed" "The Pi's Wi-Fi chip can hang while the Pi keeps running; then Fluidd and SSH lose it until a power cycle. The Wi-Fi watchdog of 2.11.0 to 2.19.0 is gone."; offer_fix "turn Wi-Fi power saving off and remove the old Wi-Fi watchdog" step_wifi; fi
+    fi
+    if logs_ok; then doc_ok "Logs: the log digest runs (wm-events.log, wm-config-check.log, wm-ace.log, wm-system.log in Fluidd > Configuration > Other Files)"
+    else doc_bad "Logs: the troubleshooting log service is not installed or not running" "Without it klippy.log is the only place to look, and it is mostly a copy of the config."; offer_fix "install the troubleshooting logs" step_logs; fi
+    if blackbox_ok; then doc_ok "Black box: the Pi is recorded every 10 s (wm-blackbox report shows the last crash)"
+    else doc_bad "Black box: not installed or not running" "A freeze or power dip then leaves no trace of the Pi's state."; offer_fix "install the black box" step_blackbox; fi
+    if ultrabackup_ok; then doc_ok "Backups: all in ~/ultra-backup, sorted by type, limited to 400 MB"
+    else doc_bad "Backups: some are outside ~/ultra-backup, or the backup folder helper is missing" "The Pi keeps its backups in one folder, sorted by type, with a size limit; older ones were spread over several folders."; offer_fix "move the backups into ~/ultra-backup" step_ultrabackup; fi
+    local lurl; lurl="$(light_url)"
+    if [ -n "$lurl" ] && [ -f "$HOME_DIR/printer_data/config/moonraker.conf" ]; then
+        python3 -I "$(light_py)" conf "$HOME_DIR/printer_data/config/moonraker.conf" "$lurl"; case "$?" in
+            0) if rpipi_has light && rpicfg_included rpi_pi.cfg; then doc_ok "chamber light: Moonraker power device chamber_light at $lurl, WM_CHAMBER_LIGHT installed"
+               else doc_bad "chamber light: WM_CHAMBER_LIGHT is not in rpi_pi.cfg or rpi_pi.cfg is not included in printer.cfg" "A print does not turn the light on at its start."; offer_fix "install WM_CHAMBER_LIGHT" step_light; fi ;;
+            10) doc_bad "chamber light: moonraker.conf has no [power chamber_light] for the screen board at $lurl (missing, or the board got a new address)" "The Light buttons in Fluidd and on the touchscreen do nothing."; offer_fix "write [power chamber_light] for $lurl" step_light ;;
+            12) doc_ok "chamber light: moonraker.conf has a [power chamber_light] section of your own" ;;
+        esac
+    fi
+    if [ -f "$(cfgmerge_py)" ] && [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] && [ -f "$(cfgmerge_new_dir)/printer.cfg" ]; then
+        if [ -f "$(cfgmerge_base_dir)/printer.cfg" ]; then doc_ok "the WonderMaker printer.cfg this Pi was set up from is recorded (the starting point for merging a newer version)"
+        else doc_bad "the WonderMaker printer.cfg this Pi was set up from is not recorded" "Without it a newer WonderMaker version cannot be merged into your printer.cfg (3-way). Fixing records this repository's factory file as the starting point."; offer_fix "record the factory printer.cfg as the starting point" cfgmerge_record; fi
+    fi
+    if [ -f "$(pidcfg_py)" ] && [ -f "$HOME_DIR/printer_data/config/printer.cfg" ]; then
+        local pco pcr; pco="$(pidcfg_check)"; pcr=$?
+        if [ "$pcr" = 0 ]; then doc_ok "PID settings of the hotends and the bed are where Klipper can save a PID result"
+        else
+            doc_bad "PID settings: $(echo "$pco" | head -n 3 | tr '\n' ';')" "SAVE_CONFIG cannot store a PID result while an included file sets a heater's control and pid values, and a hotend without control: pid has nothing to tune. It also blocks every other result saved with it (bed mesh, input shaper)."
+            offer_fix "move the PID settings into printer.cfg (a copy of each changed file is kept)" step_pidcfg
+        fi
+    fi
+    progress_bar 3 5 "Doctor 4 of 5: services"
+    local s; for s in moonraker nginx; do
+        [ "$(service_state $s)" = active ] && doc_ok "$s is running" || { doc_bad "$s is not running" "journalctl -u $s -n 30"; offer_fix "restart $s" bash -c "sudo systemctl restart $s"; }
+        [ "$(service_enabled $s)" = enabled ] && doc_ok "$s starts at boot" || { doc_bad "$s will not start at boot" "The Pi would come up without the web page."; offer_fix "enable $s" bash -c "sudo systemctl enable $s"; }
+    done
+    if [ "$TESTING" != 1 ] && [ -x /usr/local/bin/klipper_mcu ]; then   # a test run never looks at the real services of the machine
+        [ "$(service_state klipper-mcu)" = active ] && doc_ok "klipper-mcu (the host MCU) is running" || { doc_bad "klipper-mcu (the host MCU) is not running" "$(rpipi_has host-mcu && echo "printer.cfg uses [mcu rpi], so Klipper cannot start without it." || echo "Nothing uses it yet, but Fluidd lists it as stopped.")"; offer_fix "start klipper-mcu and enable it at boot" bash -c "sudo systemctl enable --now klipper-mcu"; }
+    elif rpipi_has host-mcu; then doc_bad "printer.cfg uses [mcu rpi] but the klipper-mcu service is not installed" "Klipper cannot start without it. Run ./installer.sh --update to build it."; fi
+    id -nG "$WM_USER" 2>/dev/null | tr ' ' '\n' | grep -qx tty || [ "$TESTING" = 1 ] && doc_ok "user $WM_USER is in the tty group (Klipper can open the host MCU)" || { doc_bad "user $WM_USER is not in the tty group" "Klipper could not open the host MCU ([mcu rpi]): 'Permission denied' on /tmp/klipper_host_mcu."; offer_fix "add $WM_USER to the tty group (Klipper must be restarted afterwards)" bash -c "sudo usermod -aG tty $WM_USER"; }
+    if [ "$TESTING" != 1 ]; then sudo nginx -t >/dev/null 2>&1 && doc_ok "nginx configuration is valid" || { doc_bad "nginx configuration is invalid" "sudo nginx -t shows why."; offer_fix "reinstall the nginx files" step_nginx; }; fi
+    [ -f /etc/udev/rules.d/99-wm-can0.rules ] || [ "$TESTING" = 1 ] && doc_ok "can0 rule installed" || { doc_bad "can0 rule missing" "can0 would not come up by itself."; offer_fix "install it" step_can; }
+    if usb_bridge_present; then doc_ok "main board on USB"; else doc_bad "no main board (1d50:606f) on USB" "Cable (docs/WIRING.md), printer power, D+/D- not swapped."; fi
+    if can_exists; then
+        can_is_up && doc_ok "can0 is up" || { doc_bad "can0 is down" "Klipper cannot reach the toolheads."; offer_fix "bring can0 up (1 Mbit)" bash -c "sudo ip link set can0 up type can bitrate 1000000"; }
+    else doc_bad "no can0 interface" "It appears when the main board is connected."; fi
+    if [ -n "$(polkit_warnings)" ] || ! packagekit_present; then doc_bad "Moonraker reports 'PolKit warnings detected' (PackageKit is missing)" "Fluidd's update manager cannot check or install updates."; offer_fix "install PackageKit and restart Moonraker" polkit_fix; else doc_ok "no PolKit warnings from Moonraker"; fi
+    if [ "$TESTING" != 1 ]; then
+        polkit_rule_present && doc_ok "Moonraker's PolicyKit rule is installed" || { doc_bad "Moonraker's PolicyKit rule is missing" "Fluidd shows a PolKit warning and cannot restart services."; offer_fix "install it" step_polkit; }
+        local hc; hc="$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1/ 2>/dev/null)"
+        [ "$hc" = 200 ] && doc_ok "Fluidd page opens" || { doc_bad "Fluidd page answers HTTP ${hc:-none}" "403 means nginx cannot read your home folder (Debian 12 makes it private)."; offer_fix "let nginx pass through the home folder" bash -c "chmod o+x '$HOME_DIR' && sudo systemctl reload nginx"; }
+    fi
+    [ -n "$(api_get /server/info)" ] && doc_ok "Moonraker API answers" || doc_bad "Moonraker API does not answer" "Last log lines: $(tail -n 3 "$HOME_DIR/printer_data/logs/moonraker.log" 2>/dev/null | tr '\n' ' ')"
+    if [ "$TESTING" != 1 ] && [ -d "$(ace_dir)" ] && ace_installed && [ "$(klippy_state)" = ready ]; then   # Fluidd macro categories (set by the ACE Pro project's script)
+        local fm; fm="$(api_get "/server/database/item?namespace=fluidd&key=macros" | python3 -c 'import sys,json;v=json.load(sys.stdin)["result"]["value"];print(len([c for c in v.get("categories",[]) if c.get("name")]))' 2>/dev/null)"
+        if [ "${fm:-0}" -gt 0 ] 2>/dev/null; then
+            local dr; dr="$(python3 -I "$(ace_dir)/scripts/wm_fluidd_categories.py" apply --dry-run --url http://127.0.0.1:7125 2>&1)"
+            case "$dr" in *"nothing new to sort"*) doc_ok "Fluidd macro categories are set" ;;
+                *"dry run"*) doc_bad "Fluidd macros: some macros are not in a category yet ($dr)" "Fluidd lists them in one long row."; offer_fix "sort the macros into categories" step_fluidd_categories ;;
+                *) doc_ok "Fluidd macro categories: could not be checked ($dr)" ;; esac
+        else doc_bad "Fluidd macro categories are not set up" "Fluidd lists every macro in one long row."; offer_fix "sort the macros into categories" step_fluidd_categories; fi
+    fi
+    # saved_variables safeguard: the timer runs and the script is the one of this repository
+    if [ "$TESTING" = 1 ] || { systemctl is-active --quiet wm-sv-guard.timer && cmp -s "$SCRIPT_DIR/scripts/wm_sv_guard.sh" "$HOME_DIR/printer_data/scripts/wm_sv_guard.sh"; }; then doc_ok "saved_variables safeguard: the timer runs (one good copy of saved_variables.cfg every 10 minutes)"
+    else doc_bad "saved_variables safeguard: the timer is not running, or its script is not the current one" "A power cut can leave saved_variables.cfg empty and Klipper then starts with no tool offsets."; offer_fix "install the safeguard" step_svguard; fi
+    # ModemManager must leave the ACE Pro and the Klipper boards alone
+    if [ "$TESTING" = 1 ] || cmp -s "$SCRIPT_DIR/config/99-wm-no-modemmanager.rules" /etc/udev/rules.d/99-wm-no-modemmanager.rules; then doc_ok "ModemManager is told to leave the ACE Pro and the Klipper boards alone"
+    else doc_bad "the udev rule that keeps ModemManager away from the ACE Pro and the Klipper boards is missing" "ModemManager probed the ACE Pro every 3.5 s while Klipper was stopped (the ACE kept reconnecting)."; offer_fix "install the rule" step_can; fi
+    if [ "$TESTING" = 1 ] || systemctl is-active --quiet wm-light.path; then doc_ok "chamber light: wm-light.path waits for the screen board's announcement (or the light is set up)"
+    else doc_bad "chamber light: wm-light.path is not running, so the light is not set up by itself when the screen board announces it" "The Light buttons would do nothing until you run ./installer.sh --light."; offer_fix "install it" step_light_watch; fi
+    # the board matching tool (a fresh install finds the CAN ids with it)
+    [ -f "$(canmatch_py)" ] && doc_ok "wm_canmatch.py (finds the CAN boards by firmware name) is in this folder" || doc_bad "scripts/wm_canmatch.py is missing from this folder" "A fresh install cannot tell the CAN boards apart. Run ./installer.sh --get-latest."
+    if [ "$TESTING" != 1 ]; then
+        local ks; ks="$(klippy_state)"
+        [ "$ks" = ready ] && doc_ok "Klipper is ready" || doc_bad "Klipper is '${ks:-not answering}'" "Look at Fluidd or: journalctl -u klipper -n 40. After a board matching: FIRMWARE_RESTART once."
+        if ace_installed; then
+            lsusb 2>/dev/null | grep -qi "28e9:018a" && doc_ok "ACE Pro found on USB" || doc_bad "the ACE Pro is installed in the config but no ACE Pro (28e9:018a) is on USB" "Plugged in? Powered? USB cable?"
+        fi
+        if [ -n "$(cell_uuid)" ] && [ "$ks" = ready ]; then
+            local cv; cv="$(cell_version)"
+            case "$cv" in
+                "") doc_ok "load cell board: firmware not readable now" ;;
+                *RPI_V2*) doc_ok "load cell board: firmware V2 ($cv)" ;;
+                *) doc_bad "load cell board runs $cv, not firmware V2" "The factory firmware can give a broken reading (false touches while calibrating tool offsets)."; offer_fix "flash firmware V2 (the load cell menu)" do_load_cell ;;
+            esac
+        fi
+    fi
+    if can_exists && can_is_up && [ "$(service_state klipper)" != active ]; then
+        local cf; cf="$(found_uuids)"
+        if [ -z "$cf" ]; then echo -e "  ${DIM}[skip]${NC}    CAN ids not checked: nothing answers on the bus (printer off?)"
+        elif [ -z "$(can_missing_devs "$cf")" ]; then doc_ok "every CAN id in the config answers on the bus"
+        else
+            local cf_f cf_u; while read -r cf_f cf_u; do [ -n "$cf_f" ] || continue
+                doc_bad "$(can_dev_name "$cf_f") has $cf_u in the config, which is not on the CAN bus" "Klipper cannot connect to it. Either it is not powered, or the id differs from the board's own."
+            done <<< "$(can_missing_devs "$cf")"
+            offer_fix "offer the unknown ids on the bus to the boards whose id does not answer (a copy is saved first)" fix_all_dev_uuids "$cf"
+        fi
+    elif can_exists; then echo -e "  ${DIM}[skip]${NC}    CAN ids not checked (Klipper is running and uses the bus). ./installer.sh --can-ids checks them."; fi
+    progress_bar 4 5 "Doctor 5 of 5: disk space and power"
+    local free; free=$(df -Pm "$HOME_DIR" | awk 'NR==2{print $4}'); [ "${free:-0}" -gt 800 ] && doc_ok "disk space (${free} MB free)" || doc_bad "only ${free} MB free" "Old backups: ~/ultra-backup (./installer.sh --ultra-backup shows the size) and ~/wm-rpi-backup. Gcode files: ~/printer_data/gcodes."
+    local p; p="$(power_flags)"; if [ -z "$p" ] || [ "$p" = 0x0 ]; then doc_ok "no power problems reported"; else doc_bad "the Pi reported power/heat flags $p" "Use the official 5 V / 3 A supply and a short cable."; fi
+    if [ "$WANT_SCREEN" = 1 ]; then
+        [ -d "$KS_DIR" ] && doc_ok "KlipperScreen is installed" || doc_bad "KlipperScreen is missing" "Run ./installer.sh --update."
+        if [ -d "$KS_DIR" ]; then
+            [ -f "$KS_DIR/panels/zr_tools.py" ] && [ -f "$KS_DIR/panels/zr_views.py" ] && [ -f "$KS_DIR/panels/zr_logic.py" ] && doc_ok "ZR Tools panel files" \
+                || { doc_bad "ZR Tools panel files are missing in KlipperScreen" "A KlipperScreen update may have removed them."; offer_fix "copy them again" copy_zr_panel; }
+        fi
+        [ "$(service_enabled KlipperScreen)" = enabled ] && doc_ok "KlipperScreen starts at boot" || { doc_bad "KlipperScreen will not start at boot" "The screen stays black after a restart."; offer_fix "enable KlipperScreen" bash -c "sudo systemctl enable KlipperScreen"; }
+        local r t; read -r r t < <(detect_screen); [ -n "$r" ] && doc_ok "screen found ($r)" || doc_bad "no screen detected" "Check the video cable and power."
+        [ "$t" = touch ] && doc_ok "touch device found" || doc_bad "no touch device detected" "Check the USB touch cable."
+    fi
+    if [ "$WANT_SCREEN" = macros ]; then
+        local c="$HOME_DIR/printer_data/config"
+        { [ -f "$c/zr_tools.cfg" ] && grep -q '^\[include zr_tools.cfg\]' "$c/printer.cfg" 2>/dev/null; } && doc_ok "ZR Tools macros are in printer.cfg" || doc_bad "ZR Tools macros are missing from printer.cfg" "Run ./installer.sh --update."
+    fi
+    if [ -f "$HOME_DIR/printer_data/config/printer.cfg" ]; then
+        if cfg_below_save_list >/dev/null; then
+            doc_bad "printer.cfg has an [include] under the SAVE_CONFIG block: $(cfg_below_save_list | tr '\n' ' ')" "Klipper rewrites everything under that line when it saves, so the include is lost or the file breaks."
+            offer_fix "move the include above the SAVE_CONFIG block" cfg_below_save_fix
+        else doc_ok "no [include] sits under the SAVE_CONFIG block"; fi
+    fi
+    ntp_ok && doc_ok "clock is synchronized" || doc_bad "clock is not synchronized" "HTTPS downloads and file times go wrong. Check the network."
+    progress_bar 5 5 "Doctor finished"
+    echo; [ "$DOC_PROBLEMS" = 0 ] && print_success "No problems found." || { print_warning "$DOC_PROBLEMS problem(s) found. For a report to share: ./installer.sh --support-bundle"; return 1; }
+}
+
+scrub() {  # remove secrets and private addresses from a stream
+    sed -E 's/((password|passwd|token|api_?key|secret|ssid|psk|key)[[:space:]]*[:=][[:space:]]*).*/\1<removed>/I;
+            s/\b(10\.[0-9]+\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+)\b/<private-ip>/g;
+            s/([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}/<mac>/g'
+}
+bundle_extra_logs() {  # the troubleshooting logs, the real klippy lines, the console and the printer state into the bundle dir $1
+    local b="$1" lg="$HOME_DIR/printer_data/logs" f ms=http://127.0.0.1:7125
+    for f in wm-events.log wm-events.log.1 wm-config-check.log wm-ace.log wm-ace.log.1 wm-ace.log.2 wm-system.log wm-system.log.1; do [ -f "$lg/$f" ] && scrub < "$lg/$f" > "$b/logs/$f"; done
+    [ -f "$lg/wm-blackbox.log" ] && tail -n 1500 "$lg/wm-blackbox.log" | scrub > "$b/logs/wm-blackbox.log"
+    for f in moonraker.log KlipperScreen.log crowsnest.log; do [ -f "$lg/$f" ] && tail -n 800 "$lg/$f" | scrub > "$b/logs/$f"; done
+    # klippy.log without the config copy (about 9000 lines at every start) and without the Stats lines
+    [ -f "$lg/klippy.log" ] && awk '/^===== Config file =====/{s=1} !s{print} /^=======================/{s=0}' "$lg/klippy.log" | grep -a -v '^Stats ' | tail -n 1500 | scrub > "$b/logs/klippy-real.log"
+    {
+        echo "--- config files: date, size, checksum, name"
+        for f in "$(cfg_dir)"/*.cfg "$(cfg_dir)"/moonraker.conf; do [ -f "$f" ] && printf '%s %8s %s %s\n' "$(date -r "$f" '+%F %T')" "$(stat -c %s "$f")" "$(md5sum "$f" | cut -c1-8)" "$(basename "$f")"; done
+        echo "--- versions"; echo "installer $VERSION"
+        for f in klipper moonraker wm-ultra-fluidd-acepro-panel WM_Ultra_Vanilla_Klipper; do [ -d "$HOME_DIR/$f/.git" ] && echo "$f $(git -C "$HOME_DIR/$f" describe --always --dirty 2>/dev/null)"; done
+        [ -f "$HOME_DIR/fluidd/.version" ] && echo "fluidd $(cat "$HOME_DIR/fluidd/.version")"
+    } 2>&1 | scrub > "$b/files-and-versions.txt"
+    [ "$TESTING" = 1 ] && return 0
+    curl -fsS -m 4 "$ms/printer/info" >/dev/null 2>&1 || { echo "Moonraker did not answer: no console or printer state in this bundle" > "$b/printer-state.txt"; return 0; }
+    curl -fsS -m 8 "$ms/server/gcode_store?count=300" 2>/dev/null | python3 -c 'import sys,json,time
+for x in json.load(sys.stdin)["result"]["gcode_store"]: print(time.strftime("%H:%M:%S", time.localtime(x.get("time", 0))), str(x.get("type", ""))[:4], x.get("message", ""))' 2>/dev/null | scrub > "$b/logs/console-last-300.txt"
+    {
+        curl -fsS -m 8 "$ms/printer/info" 2>/dev/null | python3 -c 'import sys,json
+r = json.load(sys.stdin)["result"]; print("Klipper:", r.get("state"), "-", " ".join(str(r.get("state_message", "")).split())[:400]); print("Klipper version:", r.get("software_version"))' 2>/dev/null
+        curl -fsS -m 10 "$ms/printer/objects/query?configfile&print_stats&idle_timeout&toolhead&ace&ace_instance_0&heater_bed&extruder" 2>/dev/null | python3 -c 'import sys,json
+r = json.load(sys.stdin)["result"]["status"]
+print("config warnings:", r.get("configfile", {}).get("warnings"))
+for k in ("print_stats", "idle_timeout", "heater_bed", "extruder"): print(k + ":", {a: b for a, b in r.get(k, {}).items() if a in ("state", "filename", "message", "total_duration", "target", "temperature")})
+print("toolhead:", {a: b for a, b in r.get("toolhead", {}).items() if a in ("homed_axes", "position", "extruder")})
+a = r.get("ace", {}); print("ace:", {x: y for x, y in a.items() if x in ("ace_instances", "current_index", "endless_spool_enabled", "toolchange_in_progress", "tool_map")})
+i = r.get("ace_instance_0", {}); print("ace instance 0:", {x: y for x, y in i.items() if x in ("status", "model", "firmware", "dryer_status", "feed_assist_slot", "protocol")})
+for sl in i.get("slots", []): print("  slot:", sl)' 2>/dev/null
+    } | scrub > "$b/printer-state.txt"
+}
+do_support_bundle() {
+    print_header "Support bundle"
+    progress_bar 0 4 "Bundle 1 of 4: system report"
+    local w; w="$(mktemp -d)"; local out="$HOME_DIR/wm-support-$STAMP.tgz" b="$w/wm-support"; mkdir -p "$b"
+    {
+        echo "WM_Ultra_Vanilla_Klipper installer $VERSION   model: $(model_now)   date: $(date -u +%FT%TZ)"
+        echo "computer: $(pi_model_line)"; uname -a; [ -r /etc/os-release ] && grep PRETTY /etc/os-release
+        echo "python3: $(python3 --version 2>&1)"; [ -x "$HOME_DIR/klippy-env/bin/python" ] && echo "klippy-env: $("$HOME_DIR/klippy-env/bin/python" --version 2>&1)"
+        echo "power flags: $(power_flags)"; df -h "$HOME_DIR" | tail -1; free -m | sed -n 2p
+        echo "--- services"; local s; for s in klipper moonraker nginx crowsnest wm-log-digest wm-blackbox; do printf '%-16s active=%s enabled=%s\n' $s "$(service_state $s)" "$(service_enabled $s)"; done
+        echo "--- usb"; lsusb 2>/dev/null
+        echo "--- usb tree (hubs and what hangs on them)"; lsusb -t 2>/dev/null
+        echo "--- serial ports in /dev (an ACE Pro should show as ttyACM*)"; ls -l /dev/ttyACM* /dev/ttyUSB* /dev/serial/by-id/* 2>&1 | head -20
+        echo "--- serial ports Klipper's python sees (name, description, hwid)"
+        if [ -x "$HOME_DIR/klippy-env/bin/python" ]; then "$HOME_DIR/klippy-env/bin/python" -m serial.tools.list_ports -v 2>&1 | head -40; else echo "klippy-env not found"; fi
+        echo "--- kernel messages about USB and serial (last 40)"; dmesg 2>&1 | grep -iE "usb|tty|cdc_acm|ch341|cp210|ftdi" | tail -40
+        echo "--- can0"; ip -details link show can0 2>&1 | head -8
+        echo "--- missing modules: $(modules_present | tr '\n' ' ')"
+        echo "--- config check"; validate_config 2>&1 | sed 's/\x1b\[[0-9;]*m//g'
+        echo "--- canbus uuids in config"; cfg_uuids | sed "s#$HOME_DIR#~#"
+    } 2>&1 | scrub > "$b/system.txt"
+    cp "$CONF" "$b/install.conf" 2>/dev/null; cp "$STATE" "$b/installed.manifest" 2>/dev/null
+    progress_bar 1 4 "Bundle 2 of 4: config files"
+    local f; mkdir -p "$b/config"
+    for f in "$(cfg_dir)"/*.cfg "$(cfg_dir)"/moonraker.conf "$(cfg_dir)"/crowsnest.conf; do [ -f "$f" ] && scrub < "$f" > "$b/config/$(basename "$f")"; done
+    progress_bar 2 4 "Bundle 3 of 4: logs"
+    mkdir -p "$b/logs"
+    local lf; lf="$(ls -1t "$LOG_DIR"/installer-*.log 2>/dev/null | head -n1)"; [ -n "$lf" ] && scrub < "$lf" > "$b/logs/last-installer-run.log"
+    for f in klippy moonraker crowsnest; do [ -f "$HOME_DIR/printer_data/logs/$f.log" ] && tail -n 400 "$HOME_DIR/printer_data/logs/$f.log" | scrub > "$b/logs/$f.log"; done
+    for s in klipper moonraker nginx crowsnest; do (journalctl -u $s -n 120 --no-pager 2>/dev/null || sudo -n journalctl -u $s -n 120 --no-pager 2>/dev/null) | scrub > "$b/logs/journal-$s.txt"; done
+    bundle_extra_logs "$b"
+    cat > "$b/README.txt" <<E
+This bundle was made by ./installer.sh --support-bundle. Passwords, tokens, keys, Wi-Fi names, private IP and MAC addresses
+were removed from the text files. Gcode files, calibration databases and backups are NOT included.
+Please look through it before sharing.
+
+Where to look first (logs/):
+  wm-events.log        one line per event: Klipper starts, config and macro errors, failed tool changes, load / unload steps, prints, and a STATE line (tool, position, offsets, heaters) at every pause, resume and cancel
+  wm-config-check.log  the config check after the last Klipper start (missing includes, doubled sections, unsupported tags ...)
+  wm-ace.log           the ACE Pro: its driver lines, console messages and when its USB port appeared or disappeared
+  wm-system.log        when Klipper, Moonraker, KlipperScreen, crowsnest and the network services started, stopped, failed or restarted
+  wm-blackbox.log      the Pi every 10 s: power flags, temperature, load, kernel USB messages (an UNCLEAN stop line marks a crash)
+  moonraker.log, KlipperScreen.log, crowsnest.log   the last 800 lines of each (when the Pi has them)
+  klippy-real.log      the last klippy.log lines WITHOUT the config copy and the Stats lines
+  console-last-300.txt the last 300 console lines, as seen in Fluidd
+  ../printer-state.txt Klipper state, print state, config warnings, ACE status
+  ../files-and-versions.txt  date, size and checksum of every config file, program versions
+E
+    progress_bar 3 4 "Bundle 4 of 4: packing the file"
+    tar czf "$out" -C "$w" wm-support; rm -rf "$w"; chmod 600 "$out"
+    progress_bar 4 4 "Done"
+    print_success "Saved $out ($(du -h "$out" | cut -f1)). Look through it, then send it along with your question."
+}
+
+# ============================================================================
+# Modes
+# ============================================================================
+do_check() {
+    print_header "Check (changes nothing)"
+    progress_bar 0 3 "Check 1 of 3: folders and printer.cfg"
+    local bad=0
+    local dirs="klipper moonraker printer_data fluidd klippy-env moonraker-env"; [ "$TESTING" = 1 ] && dirs="klipper moonraker printer_data fluidd"
+    for d in $dirs; do
+        [ -d "$HOME_DIR/$d" ] && print_success "~/$d" || { print_error "~/$d missing"; bad=1; }
+    done
+    [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] && print_success "printer.cfg" || { print_error "printer.cfg missing"; bad=1; }
+    progress_bar 1 3 "Check 2 of 3: services"
+    [ "$TESTING" = 1 ] || {
+        print_info "moonraker: $(service_state moonraker)   nginx: $(service_state nginx)   klipper: $(service_state klipper) (enabled: $(systemctl is-enabled klipper 2>/dev/null))"
+        [ "$(service_state moonraker)" = active ] || { print_error "Moonraker is not running"; bad=1; }
+        [ -x "$SCRIPT_DIR/scripts/board_check.sh" ] && bash "$SCRIPT_DIR/scripts/board_check.sh"
+    }
+    progress_bar 2 3 "Check 3 of 3: Fluidd warnings"
+    if [ -n "$(polkit_warnings)" ] || ! packagekit_present; then print_warning "Fluidd shows 'PolKit warnings detected' (PackageKit missing). Fix: ./installer.sh --repair"; fi
+    progress_bar 3 3 "Check finished"
+    [ "$bad" = 0 ] && print_success "All good." || { print_error "Problems found."; exit 1; }
+}
+
+do_start_klipper() {
+    print_header "Start Klipper again"
+    why "Undoes 'Stop Klipper': Klipper starts now and at every boot. No hardware checks (First start does those)."
+    guard_not_printing
+    usb_bridge_present || print_warning "No main board (1d50:606f) on USB. Klipper starts anyway and reports an error until the board is connected."
+    SUDO systemctl enable klipper; SUDO systemctl restart klipper
+    if [ "$TESTING" = 1 ] || [ "$DRY" = 1 ]; then print_success "Klipper enabled and started (test)"; return 0; fi
+    local st=""; wait_klipper_ready; st="$WAIT_ST"
+    case "$st" in
+        ready) print_success "Klipper is enabled at boot and ready." ;;
+        startup|"") print_warning "Klipper is enabled and still starting (state: ${st:-unknown}). Watch: journalctl -u klipper -f" ;;
+        *) print_warning "Klipper is enabled but reports '$st'. Look at Fluidd or: journalctl -u klipper -n 40" ;;
+    esac
+}
+do_disable() { SUDO systemctl disable klipper; SUDO systemctl stop klipper; print_success "Klipper stopped and disabled."; }
+
+do_uninstall() {
+    print_header "Uninstall"
+    [ -f "$STATE" ] || die_with_fix "no install record at $STATE." "nothing to remove."
+    echo "This removes the services, nginx files and can0 rule the installer added. Your files in ~ are left in place."
+    ask_yn "Continue?" n || exit 0
+    rpi_names_migrate
+    uninstall_system_files
+}
+uninstall_system_files() {
+    SUDO systemctl stop klipper; SUDO systemctl stop moonraker
+    SUDO systemctl disable klipper; SUDO systemctl disable moonraker
+    [ -f /etc/systemd/system/klipper-mcu.service ] && { SUDO systemctl stop klipper-mcu; SUDO systemctl disable klipper-mcu; }   # the host MCU this installer built
+    [ -f /etc/systemd/system/wm-sv-guard.timer ] && { SUDO systemctl stop wm-sv-guard.timer; SUDO systemctl disable wm-sv-guard.timer; }   # the saved_variables.cfg safeguard
+    [ -f /etc/systemd/system/wm-light.path ] && { SUDO systemctl stop wm-light.path; SUDO systemctl disable wm-light.path; }   # the chamber light watcher
+    [ -f /etc/systemd/system/wm-pi-update.path ] && { SUDO systemctl stop wm-pi-update.path; SUDO systemctl disable wm-pi-update.path; }   # Fluidd's Update button helper
+    [ -f /etc/systemd/system/wm-panel-update.path ] && { SUDO systemctl stop wm-panel-update.path; SUDO systemctl disable wm-panel-update.path; }   # the same for the Fluidd panel
+    [ -f /etc/systemd/system/wm-wifi-watchdog.service ] && { SUDO systemctl stop wm-wifi-watchdog; SUDO systemctl disable wm-wifi-watchdog; }   # the Wi-Fi watchdog (Wi-Fi power saving stays off: a NetworkManager setting of your connection)
+    [ -f /etc/systemd/system/wm-log-digest.service ] && { SUDO systemctl stop wm-log-digest; SUDO systemctl disable wm-log-digest; }   # the troubleshooting logs (the log files stay)
+    [ -f /etc/systemd/system/wm-blackbox.service ] && { SUDO systemctl stop wm-blackbox; SUDO systemctl disable wm-blackbox; }   # the black box (its log in /var/log/wm-blackbox stays)
+    local k v
+    while read -r k v; do
+        case "$k" in
+            FILE|LINK) SUDO rm -f "$v" ;;
+        esac
+    done < "$STATE"
+    local rd; for rd in moonraker-obico octoapp octoeverywhere; do
+        [ -d "$HOME_DIR/$rd" ] && print_warning "~/$rd is a remote-access add-on linked to your account and is NOT removed. Remove it with its own uninstaller: $([ "$rd" = moonraker-obico ] && echo "see Uninstall in ~/moonraker-obico/README.md" || echo "cd ~/$rd && ./uninstall.sh")"
+    done
+    SUDO systemctl daemon-reload; SUDO udevadm control --reload-rules
+    SUDO nginx -t >/dev/null 2>&1 && SUDO systemctl reload nginx
+    mv "$STATE" "$STATE.removed-$STAMP"
+    print_success "Removed. Folders in your home (klipper, moonraker, printer_data, fluidd, environments) are untouched; delete them yourself if you want."
+}
+
+
+# ============================================================================
+# Remove an add-on (asks first; uses the makers' own uninstallers)
+# ============================================================================
+cleanup_name() {
+    case "$1" in
+        backups) echo "settings backups (~/ultra-backup/settings)" ;; bundles) echo "support bundles (~/wm-support-*.tgz)" ;; logs) echo "installer logs (~/wm-install-logs)" ;;
+        stage) echo "software copied from the old board (~/wm-stage)" ;; moved) echo "folders moved aside by installs" ;; fluiddcopies) echo "old Fluidd copies" ;;
+        cfgcopies) echo "config safety copies (*.wm-*)" ;; downloads) echo "add-on download copies" ;; records) echo "installer records (~/wm-rpi-backup)" ;; *) echo "$1" ;;
+    esac
+}
+cleanup_paths() {   # group -> the paths that exist (one per line)
+    local cfgd d; cfgd="$(cfg_dir)"
+    case "$1" in
+        backups) [ -d "$WMB" ] && echo "$WMB" ;;
+        bundles) ls -1d "$HOME_DIR"/wm-support-*.tgz 2>/dev/null ;;
+        logs)    [ -d "$LOG_DIR" ] && echo "$LOG_DIR" ;;
+        stage)   [ -d "$HOME_DIR/wm-stage" ] && echo "$HOME_DIR/wm-stage" ;;
+        moved)   ls -1d "$BACKUP_ROOT"/old-* 2>/dev/null ;;
+        fluiddcopies) ls -1d "$BACKUP_ROOT"/fluidd-* 2>/dev/null ;;
+        cfgcopies) ls -1d "$cfgd"/*.wm-* 2>/dev/null ;;
+        downloads)
+            [ -d "$BACKUP_ROOT/.panel-dl" ] && echo "$BACKUP_ROOT/.panel-dl"
+            for d in moonraker-obico octoapp octoeverywhere; do [ -d "$HOME_DIR/$d" ] && [ ! -f "/etc/systemd/system/$d.service" ] && echo "$HOME_DIR/$d"; done ;;
+        records) [ -d "$BACKUP_ROOT" ] && echo "$BACKUP_ROOT" ;;
+        repo)    [ -f "$REPO_DIR/installer.sh" ] && [ -f "$REPO_DIR/VERSION" ] && [ "$REPO_DIR" != "$HOME_DIR" ] && [ "$REPO_DIR" != / ] && echo "$REPO_DIR" ;;
+    esac
+}
+do_cleanup() {   # a page of installer-made files you can delete; your printer data is never in it
+    local groups=(backups bundles logs stage moved fluiddcopies cfgcopies downloads records repo) g n paths sz cnt word
+    declare -A label=([backups]="Settings backups (~/ultra-backup/settings)" [bundles]="Support bundles (~/wm-support-*.tgz)" [logs]="Installer logs (~/wm-install-logs)" [stage]="Software copied from the old board (~/wm-stage)" [moved]="Folders moved aside by installs" [fluiddcopies]="Old Fluidd copies" [cfgcopies]="Config safety copies (*.wm-*)" [downloads]="Add-on download copies" [records]="Installer records (~/wm-rpi-backup)" [repo]="The installer folder itself")
+    declare -A help=([backups]="backup .tgz files and safety copies made before restores" [bundles]="logs bundles made for help requests" [logs]="the log of each run that changed something" [stage]="the copy of klipper, moonraker and data an install made from the old board; pull it again if you need it" [moved]="old klipper, moonraker, printer_data folders in ~/wm-rpi-backup/old-*" [fluiddcopies]="Fluidd saved before each panel update" [cfgcopies]="files like printer.cfg.wm-model-bak in your config folder" [downloads]="panel download cache, add-on sources that are not installed" [records]="saved answers and install record; after this the installer no longer knows what is installed" [repo]="$REPO_DIR (this script)")
+    while true; do
+        echo; echo "  Clean up installer files"; echo "  Files made by or for this installer. Your printer data (~/printer_data) is never in this list."
+        n=0; for g in "${groups[@]}"; do
+            n=$((n+1)); paths="$(cleanup_paths "$g")"
+            if [ -z "$paths" ]; then menu_item "$n" "${label[$g]}" "[nothing to delete]"
+            else cnt="$(echo "$paths" | wc -l)"; sz="$(echo "$paths" | tr '\n' '\0' | du -shc --files0-from=- 2>/dev/null | tail -1 | cut -f1)"; menu_item "$n" "${label[$g]}" "[${sz:-?}, $cnt item(s)] ${help[$g]}"; fi
+        done
+        menu_item 0 "Back" ""
+        menu_read "Choose what to delete:" || return 0
+        [ "$REPLY_MENU" = 0 ] || [ -z "$REPLY_MENU" ] && return 0
+        if ! [[ "$REPLY_MENU" =~ ^[0-9]+$ ]] || [ "$REPLY_MENU" -lt 1 ] || [ "$REPLY_MENU" -gt "${#groups[@]}" ]; then echo "  Choose a number from the list."; continue; fi
+        g="${groups[$((REPLY_MENU-1))]}"; paths="$(cleanup_paths "$g")"
+        [ -z "$paths" ] && { echo "  Nothing to delete there."; continue; }
+        echo "  This deletes:"; echo "$paths" | sed 's/^/    /'
+        case "$g" in
+            backups|stage|moved|fluiddcopies|records|repo)
+                echo "  These may be the only copy of your settings or of older versions. Copy anything you want to keep off the Pi first."
+                read -r -p "  Type DELETE (capital letters) to confirm, anything else cancels: " word || word=""
+                [ "$word" = DELETE ] || { echo "  Nothing changed."; continue; } ;;
+            *) ask_yn "Delete these?" n || { echo "  Nothing changed."; continue; } ;;
+        esac
+        echo "$paths" | while IFS= read -r p; do rm_path "$p"; done
+        case "$g" in
+            records) print_warning "The installer no longer knows what is installed: Update and the menu will say so. To use it again run ./installer.sh --install." ;;
+            repo) cd "$HOME_DIR" || true; print_success "The installer folder was deleted. Run it again by downloading the repository."; exit 0 ;;
+        esac
+        print_success "Deleted: ${label[$g]}"
+    done
+}
+do_remove_addon() {   # one removal, with a bar that moves as its steps happen
+    local rc=0
+    rpi_names_migrate
+    PROG_RM_SEEN=""; [ "${PROG_QUIET:-0}" = 1 ] || PROG_RM=1
+    do_remove_addon_core || rc=$?
+    PROG_RM=0
+    [ "$rc" = 0 ] && [ -n "$PROG_RM_SEEN" ] && progress_bar 100 100 "$ARG1 removed"
+    PROG_RM_SEEN=""
+    return $rc
+}
+do_remove_addon_core() {
+    local name="$ARG1" dir env svc cfgd; cfgd="$(cfg_dir)"
+    load_answers || true
+    guard_not_printing
+    case "$name" in
+        shell-command)
+            local ef="$HOME_DIR/klipper/klippy/extras/gcode_shell_command.py" users
+            [ -f "$ef" ] || { print_info "The shell command extension is not installed."; return 0; }
+            users="$(grep -rl '^\[gcode_shell_command' "$cfgd" 2>/dev/null | grep -v -e '/rpi_nozzle\.cfg$' -e '/backup/' | tr '\n' ' ')"   # rpi_nozzle.cfg is ours (it holds the speed test too): it is taken out below
+            if [ -n "$users" ] && [ "$FORCE" != 1 ]; then die_with_fix "printer.cfg still has [gcode_shell_command ...] sections (in: $users). Klipper would not start without the extension." "remove those sections first, then try again."; fi
+            ask_yn "Remove the Klipper gcode shell command extension?" n || { echo "Nothing changed."; return 0; }
+            local own what
+            for own in rpi_nozzle.cfg; do   # _WM_NOZZLE_TYPE and the Save button of the speed test need the extension: take the include out (printer.cfg is copied first) and keep the file aside
+                [ -f "$cfgd/$own" ] || continue
+                [ "$own" = rpi_nozzle.cfg ] && what="_WM_NOZZLE_TYPE and the speed test WM_AUTO_SPEED" || what="?"
+                [ -f "$cfgd/printer.cfg" ] && { [ -f "$cfgd/printer.cfg.wm-before-rmshell-$STAMP" ] || cp "$cfgd/printer.cfg" "$cfgd/printer.cfg.wm-before-rmshell-$STAMP"; } && sed -i "/^[[:space:]]*\[include[[:space:]]\+${own//./\\.}[[:space:]]*\]/d" "$cfgd/printer.cfg"
+                mv "$cfgd/$own" "$cfgd/$own.wm-removed-$STAMP"; print_info "$own ($what) was taken out of printer.cfg too, because it needs the extension. It is kept as $own.wm-removed-$STAMP."
+            done
+            rm -f "$ef"; WANT_SHELLCMD=0; save_answers
+            print_success "Removed. Restart Klipper from Fluidd when you are ready." ;;
+        obico|octoapp|octoeverywhere)
+            case "$name" in obico) dir=moonraker-obico; env=moonraker-obico-env; svc=moonraker-obico ;; octoapp) dir=octoapp; env=octoapp-env; svc=octoapp ;; *) dir=octoeverywhere; env=octoeverywhere-env; svc=octoeverywhere ;; esac
+            [ -d "$HOME_DIR/$dir" ] || [ -d "$HOME_DIR/$env" ] || { print_info "$name is not installed."; return 0; }
+            echo "  This removes $name from this Pi (its service, ~/$dir and ~/$env). Your account on their website stays; remove the printer there yourself."
+            ask_yn "Remove $name?" n || { echo "Nothing changed."; return 0; }
+            if [ "$TESTING" = 1 ]; then echo "[test] remove $name" >> "$HOME_DIR/.sudo.log"; [ "$name" != obico ] && run_official_uninstall "$name" "$HOME_DIR/$dir" bash ./uninstall.sh
+            else
+                # OctoApp and OctoEverywhere ship ./uninstall.sh. Obico's own uninstall (./install.sh -u) only lists the steps below, which are done here exactly as it lists them.
+                if [ "$name" != obico ] && [ -f "$HOME_DIR/$dir/uninstall.sh" ]; then run_official_uninstall "$name" "$HOME_DIR/$dir" official_with_answers bash ./uninstall.sh; fi
+                SUDO systemctl stop "$svc" 2>/dev/null; SUDO systemctl disable "$svc" 2>/dev/null
+                SUDO rm -f "/etc/systemd/system/$svc.service"; SUDO systemctl daemon-reload; SUDO systemctl reset-failed 2>/dev/null
+                if [ "$name" = obico ]; then   # Klipper would not start with the include pointing at a deleted file
+                    rm -f "$cfgd/moonraker_obico_macros.cfg"
+                    if grep -q 'include moonraker_obico_macros.cfg' "$cfgd/printer.cfg" 2>/dev/null; then
+                        cp "$cfgd/printer.cfg" "$cfgd/printer.cfg.wm-before-obico-removal-$STAMP"; sed -i '/include moonraker_obico_macros.cfg/d' "$cfgd/printer.cfg"
+                        print_info "Removed the Obico include from printer.cfg (copy: printer.cfg.wm-before-obico-removal-$STAMP)"
+                    fi
+                    if grep -q 'include moonraker-obico-update.cfg' "$cfgd/moonraker.conf" 2>/dev/null; then sed -i '/include moonraker-obico-update.cfg/d' "$cfgd/moonraker.conf"; rm -f "$cfgd/moonraker-obico-update.cfg"; fi
+                fi
+            fi
+            if [ "$name" = obico ] && [ -f "$cfgd/moonraker-obico.cfg" ]; then mv "$cfgd/moonraker-obico.cfg" "$cfgd/moonraker-obico.cfg.wm-removed-$STAMP"; print_info "Obico's settings file was set aside as moonraker-obico.cfg.wm-removed-$STAMP, so a new install asks for the server again."; fi
+            rm_path "$HOME_DIR/$dir" "$HOME_DIR/$env"
+            [ "$name" != obico ] && { rm_path "$HOME_DIR/$name-installer.log"; local lf; for lf in "$cfgd/$name".* "$cfgd/$name"-*; do [ -e "$lf" ] && case "$lf" in *.wm-*) ;; *) rm_path "$lf" ;; esac; done; }
+            case "$name" in obico) WANT_OBICO=0 ;; octoapp) WANT_OCTOAPP=0 ;; *) WANT_OCTOEVERYWHERE=0 ;; esac; save_answers
+            print_success "$name removed."
+            [ "$name" != obico ] && moonraker_drop_update_section "$name"
+            print_info "Restart Moonraker$([ "$name" = obico ] && echo " and Klipper") from Fluidd when you are ready." ;;
+        screen) do_screen_remove ;;
+        acepro)
+            local adir bk tl="~"; adir="$(ace_dir)"; bk="$HOME_DIR/ultra-backup/installer/acepro-panel"; [ -d "$bk" ] || bk="$HOME_DIR/acepro-backup"   # the panel installer keeps its undo folders in ~/ultra-backup since 1.16.0
+            if ! ace_installed && [ ! -d "$adir" ] && [ ! -L "$HOME_DIR/klipper/klippy/extras/ace" ] && ! ls "$cfgd"/rpi_ace*.cfg "$cfgd"/rpi_endless.cfg "$cfgd"/rpi_stats.cfg >/dev/null 2>&1; then print_info "The ACE Pro is not installed."; return 0; fi
+            echo "  This removes everything that belongs to the ACE Pro: its four config files (rpi_ace_driver.cfg, rpi_ace.cfg, rpi_endless.cfg, rpi_stats.cfg) and their include lines in printer.cfg (a copy is kept), the ACE links in Klipper's extras, and the downloaded project ~/wm-ultra-fluidd-acepro-panel."
+            echo "  The Fluidd Toolheads panel stays (it works without an ACE; the ACE parts hide themselves). Klipper needs a restart afterwards."
+            ask_yn "Remove the ACE Pro?" n || { echo "Nothing changed."; return 0; }
+            guard_not_printing
+            local ok=0
+            if [ -f "$adir/installer.sh" ]; then ace_run_installer --uninstall "y\n" && ok=1; fi
+            # whatever the project's own uninstaller left (or if it could not run): the same removal by hand, printer.cfg saved first
+            if grep -qE '^[[:space:]]*\[include[[:space:]]+rpi_(ace_driver|ace|endless|stats)\.cfg\]' "$cfgd/printer.cfg" 2>/dev/null; then
+                cp "$cfgd/printer.cfg" "$cfgd/printer.cfg.wm-before-acepro-removal-$STAMP"
+                sed -i -E '/^[[:space:]]*\[include[[:space:]]+rpi_(ace_driver|ace|endless|stats)\.cfg\]/d' "$cfgd/printer.cfg"
+                print_info "Removed the ACE include lines from printer.cfg (copy: printer.cfg.wm-before-acepro-removal-$STAMP)"
+            fi
+            local af; for af in $ace_cfg_files rpi-ultra-install.conf; do [ -e "$cfgd/$af" ] && rm_path "$cfgd/$af"; done
+            for af in ace temperature_ace.py virtual_pins.py; do [ -L "$HOME_DIR/klipper/klippy/extras/$af" ] && rm -f "$HOME_DIR/klipper/klippy/extras/$af"; done
+            rm_path "$adir"
+            moonraker_drop_update_section wm-ultra-fluidd-acepro-panel
+            if [ -d "$bk" ]; then
+                if [ "${REMOVE_DATA:-0}" = 1 ]; then rm_path "$bk"
+                elif [ "${REMOVE_CONFIRMED:-0}" != 1 ] && ask_yn "Also delete the saved copies of the files the ACE installer changed (${bk/#$HOME_DIR/$tl})? They are the only way to bring the ACE install back." n; then rm_path "$bk"
+                else print_info "The saved copies were kept in ${bk/#$HOME_DIR/$tl}."; fi
+            fi
+            WANT_ACEPRO=0; save_answers
+            print_success "ACE Pro removed. Restart Klipper from Fluidd when you are ready." ;;
+        spoolman)
+            [ -d "$HOME_DIR/Spoolman" ] || [ -f /etc/systemd/system/Spoolman.service ] || { print_info "Spoolman is not installed."; return 0; }
+            echo "  This removes the Spoolman service, ~/Spoolman and the [spoolman] and update entries in moonraker.conf (a copy is kept). Your spool database (usually ~/.local/share/spoolman) is kept unless you say yes to the next question."
+            ask_yn "Remove Spoolman?" n || { echo "Nothing changed."; return 0; }
+            SUDO systemctl stop Spoolman; SUDO systemctl disable Spoolman
+            rm_path /etc/systemd/system/Spoolman.service "$HOME_DIR/Spoolman"
+            SUDO systemctl daemon-reload; SUDO systemctl reset-failed
+            moonraker_drop_section spoolman; moonraker_drop_update_section Spoolman
+            [ -f "$HOME_DIR/printer_data/moonraker.asvc" ] && sed -i '/^Spoolman$/d' "$HOME_DIR/printer_data/moonraker.asvc"
+            if [ -d "$HOME_DIR/.local/share/spoolman" ]; then
+                if [ "${REMOVE_DATA:-0}" = 1 ]; then rm_path "$HOME_DIR/.local/share/spoolman"
+                elif [ "${REMOVE_CONFIRMED:-0}" != 1 ] && ask_yn "Also delete your spool database (~/.local/share/spoolman)? This cannot be undone." n; then rm_path "$HOME_DIR/.local/share/spoolman"
+                else print_info "Your spool database was kept in ~/.local/share/spoolman."; fi
+            fi
+            WANT_SPOOLMAN=0; save_answers
+            print_success "Spoolman removed. Moonraker needs a restart to forget it: sudo systemctl restart moonraker" ;;
+        shaketune)
+            [ -d "$HOME_DIR/klippain_shaketune" ] || [ -L "$HOME_DIR/klipper/klippy/extras/shaketune" ] || { print_info "Shake&Tune is not installed."; return 0; }
+            echo "  This removes Klippain Shake&Tune: the link in Klipper's extras, ~/klippain_shaketune, the [include shaketune.cfg] line in printer.cfg (a copy is kept) and its update manager section. Your results in ~/printer_data/config/ShakeTune_results stay. Klipper needs a restart afterwards."
+            ask_yn "Remove Shake&Tune?" n || { echo "Nothing changed."; return 0; }
+            # Shake&Tune has no uninstaller; these are the steps its README implies (remove [shaketune], the extras link, the folder, the update section)
+            if grep -q 'include shaketune.cfg' "$cfgd/printer.cfg" 2>/dev/null; then cp "$cfgd/printer.cfg" "$cfgd/printer.cfg.wm-before-shaketune-removal-$STAMP"; sed -i '/include shaketune.cfg/d' "$cfgd/printer.cfg"; print_info "Removed the Shake&Tune include from printer.cfg (copy: printer.cfg.wm-before-shaketune-removal-$STAMP)"; fi
+            if grep -rqs --exclude-dir=backup '^\[shaketune\]' "$cfgd/printer.cfg" 2>/dev/null; then print_warning "printer.cfg still has its own [shaketune] section. Klipper will not start without the extension: delete that section too."; fi
+            rm_path "$cfgd/shaketune.cfg" "$HOME_DIR/klipper/klippy/extras/shaketune" "$HOME_DIR/klippain_shaketune"
+            moonraker_drop_update_section Klippain-ShakeTune
+            WANT_SHAKETUNE=0; save_answers
+            print_success "Shake&Tune removed. Restart Klipper from Fluidd when you are ready." ;;
+        network-manager)
+            if [ ! -f "$NETMGR_STATE" ]; then print_info "This installer did not switch the Pi to NetworkManager (it was already in use, or never installed), so there is nothing to switch back. Not touching your network setup."; return 0; fi
+            echo "  This switches the Pi back to dhcpcd: dhcpcd is enabled and NetworkManager is disabled. It takes effect at the next reboot; nothing restarts now. The network-manager package stays installed. KlipperScreen's Network panel stops working."
+            ask_yn "Switch back to dhcpcd?" n || { echo "Nothing changed."; return 0; }
+            SUDO systemctl enable dhcpcd; SUDO systemctl disable NetworkManager
+            rm -f "$NETMGR_STATE"; WANT_NETMGR=0; save_answers
+            print_success "Done. Reboot when you are ready (sudo reboot). Install NetworkManager again any time: ./installer.sh --update --network-manager on" ;;
+        webcam)
+            [ -d "$HOME_DIR/crowsnest" ] || [ -f /etc/systemd/system/crowsnest.service ] || { print_info "The webcam service is not installed."; return 0; }
+            echo "  This removes the webcam service (crowsnest) and ~/crowsnest. Your camera settings file crowsnest.conf stays in your config folder."
+            ask_yn "Remove the webcam service?" n || { echo "Nothing changed."; return 0; }
+            run_official_uninstall crowsnest "$HOME_DIR/crowsnest" official_yes make uninstall
+            SUDO systemctl stop crowsnest; SUDO systemctl disable crowsnest
+            SUDO rm -f /etc/systemd/system/crowsnest.service /usr/local/bin/crowsnest /etc/logrotate.d/crowsnest; SUDO systemctl daemon-reload
+            rm_path "$HOME_DIR/crowsnest" "$HOME_DIR/crowsnest-env"; moonraker_drop_update_section crowsnest; WANT_CROWSNEST=0; save_answers
+            print_success "Webcam service removed. crowsnest asks for a reboot after its uninstall: sudo reboot when you are ready." ;;
+        timelapse)
+            [ -d "$HOME_DIR/moonraker-timelapse" ] || { print_info "Timelapse is not installed."; return 0; }
+            echo "  This removes the timelapse component and ~/moonraker-timelapse. ffmpeg, timelapse.cfg and finished videos stay. The [timelapse] section in moonraker.conf is commented out (a copy is kept)."
+            ask_yn "Remove timelapse?" n || { echo "Nothing changed."; return 0; }
+            local comp="$HOME_DIR/moonraker/moonraker/components/timelapse.py" mc="$cfgd/moonraker.conf"
+            [ -L "$comp" ] && rm -f "$comp"
+            if grep -q '^\[timelapse\]' "$mc" 2>/dev/null; then
+                cp "$mc" "$mc.wm-before-timelapse-removal-$STAMP"
+                python3 - "$mc" <<'PY'
+import sys
+p = sys.argv[1]; out = []; inside = False
+for line in open(p).read().split("\n"):
+    if line.startswith("["): inside = line.startswith("[timelapse]")
+    out.append("#" + line if inside and line.strip() and not line.startswith("#") else line)
+open(p, "w").write("\n".join(out))
+PY
+                print_info "Commented out [timelapse] in moonraker.conf (copy: moonraker.conf.wm-before-timelapse-removal-$STAMP)"
+            fi
+            moonraker_drop_update_section timelapse
+            rm_path "$HOME_DIR/moonraker-timelapse"; WANT_TIMELAPSE=0; save_answers
+            print_success "Timelapse removed. Restart Moonraker from Fluidd when you are ready." ;;
+        fluidd)
+            [ -d "$HOME_DIR/fluidd" ] || [ -e /etc/nginx/sites-enabled/fluidd ] || { print_info "The Fluidd web page is not installed."; return 0; }
+            echo "  This removes the Fluidd web page (~/fluidd, with the WonderMaker Toolheads panel) and its nginx site. Klipper and Moonraker keep running."
+            echo "  You cannot open the printer in a browser until you run ./installer.sh --update (it puts the page back)."
+            ask_yn "Remove the Fluidd web page?" n || { echo "Nothing changed."; return 0; }
+            SUDO rm -f /etc/nginx/sites-enabled/fluidd /etc/nginx/sites-available/fluidd /etc/nginx/conf.d/common_vars.conf /etc/nginx/conf.d/upstreams.conf
+            SUDO nginx -t >/dev/null 2>&1 && SUDO systemctl reload nginx
+            rm_path "$HOME_DIR/fluidd"
+            print_success "Fluidd web page removed." ;;
+        moonraker|klipper)
+            local pre; pre="$name"
+            [ -d "$HOME_DIR/$pre" ] || { [ "$TESTING" != 1 ] && [ -f /etc/systemd/system/$pre.service ]; } || { print_info "$name is not installed."; return 0; }
+            if [ "$name" = moonraker ]; then echo "  This removes Moonraker (its service, ~/moonraker and ~/moonraker-env). Fluidd, KlipperScreen and the remote-access add-ons need it. ~/printer_data stays."
+            else echo "  This removes Klipper (its service, ~/klipper and ~/klippy-env). The printer will not run without it. ~/printer_data stays."; fi
+            ask_yn "Remove $name?" n || { echo "Nothing changed."; return 0; }
+            SUDO systemctl stop "$name"; SUDO systemctl disable "$name"
+            SUDO rm -f "/etc/systemd/system/$name.service"; SUDO systemctl daemon-reload
+            rm_path "$HOME_DIR/$name" "$HOME_DIR/$([ "$name" = klipper ] && echo klippy-env || echo moonraker-env)"
+            print_success "$name removed. Put it back with ./installer.sh --update or --install." ;;
+        data)
+            [ -d "$HOME_DIR/printer_data" ] || [ -d "$HOME_DIR/TM_T1" ] || { print_info "There is no ~/printer_data."; return 0; }
+            echo "  This DELETES ~/printer_data and ~/TM_T1 (WonderMaker's factory settings): printer.cfg and all your config, calibration, the Moonraker database (history and settings), gcode files and logs."
+            echo "  A backup of your config and database is saved first in ~/ultra-backup/settings."
+            ask_yn "Delete my printer data?" n || { echo "Nothing changed."; return 0; }
+            local word; read -r -p "  Type DELETE (capital letters) to confirm, anything else cancels: " word || word=""
+            [ "$word" = DELETE ] || { echo "Nothing changed."; return 0; }
+            ARG1="$WMB"; do_backup >/dev/null
+            SUDO systemctl stop klipper; SUDO systemctl stop moonraker
+            rm_path "$HOME_DIR/printer_data" "$HOME_DIR/TM_T1"
+            print_success "Printer data deleted. The backup is in ~/ultra-backup/settings (newest file): copy it off the Pi." ;;
+        cleanup) do_cleanup ;;
+        system)
+            [ -f "$STATE" ] || { print_info "Nothing recorded to remove."; return 0; }
+            do_uninstall ;;
+        all)
+            local word c any=0
+            echo "  This is what will be removed (what is installed now):"
+            for c in screen webcam timelapse shell-command shaketune spoolman acepro obico octoapp octoeverywhere fluidd moonraker klipper; do
+                [ "$(addon_status "$c")" = "not installed" ] && continue
+                echo "    - $c  [$(addon_status "$c")]"; any=1
+            done
+            python39_added && echo "    - the Python 3.9 the installer added (~/.pythons, ~/uvtool)"
+            [ -f "$STATE" ] && { echo "    - the system files the installer added (services, nginx files, can0 rule)"; any=1; }
+            [ "$any" = 0 ] && { echo "    (nothing is installed)"; return 0; }
+            echo "  Each add-on's own uninstaller runs first and may ask its own questions."
+            echo "  Your printer data (~/printer_data), your backups and the installer files are NOT touched; remove them separately."
+            read -r -p "  Type REMOVE (capital letters) to confirm, anything else cancels: " word || word=""
+            [ "$word" = REMOVE ] || { echo "Nothing changed."; return 0; }
+            local todo=() ti=0; for c in screen webcam timelapse shell-command shaketune spoolman acepro obico octoapp octoeverywhere fluidd moonraker klipper; do
+                [ "$(addon_status "$c")" = "not installed" ] || todo+=("$c"); done
+            local tn=$(( ${#todo[@]} + 1 ))
+            for c in "${todo[@]}"; do
+                progress_bar "$ti" "$tn" "Removing $c (step $((ti+1)) of $tn)"; ti=$((ti+1))
+                ( ARG1="$c"; REMOVE_CONFIRMED=1; FORCE=1; PROG_QUIET=1; do_remove_addon )
+            done
+            progress_bar "$ti" "$tn" "Removing the system files and leftovers (step $tn of $tn)"
+            remove_python39
+            [ -f "$STATE" ] && uninstall_system_files
+            progress_bar "$tn" "$tn" "Done"
+            print_success "The programs were removed."
+            leftover_report ;;
+        erase)
+            local word c g paths f
+            echo "  ERASE EVERYTHING. This is what will be deleted:"
+            for c in screen webcam timelapse shell-command shaketune spoolman acepro obico octoapp octoeverywhere fluidd moonraker klipper; do
+                [ "$(addon_status "$c")" = "not installed" ] && continue
+                echo "    - $c  [$(addon_status "$c")]"
+            done
+            python39_added && echo "    - the Python 3.9 the installer added (~/.pythons, ~/uvtool)"
+            [ -f "$STATE" ] && echo "    - the system files the installer added (services, nginx files, can0 rule)"
+            [ -f "$NETMGR_STATE" ] && echo "    - NetworkManager is switched back to dhcpcd (at the next reboot)"
+            { [ -d "$HOME_DIR/printer_data" ] || [ -d "$HOME_DIR/TM_T1" ]; } && echo "    - MY PRINTER DATA: ~/printer_data and ~/TM_T1 (config, calibration, database, gcode files). NO backup is made."
+            for g in backups bundles logs stage moved fluiddcopies cfgcopies downloads records; do
+                paths="$(cleanup_paths "$g")"; [ -n "$paths" ] && echo "    - $(cleanup_name "$g")  ($(echo "$paths" | wc -l) item(s))"
+            done
+            echo "  Kept: the installer folder $REPO_DIR${LOG_FILE:+ and the log of this run ($LOG_FILE)}."
+            echo "  This cannot be undone. Copy anything you want to keep (backups, ~/printer_data) off the Pi first."
+            echo "  Each add-on's own uninstaller runs and may ask its own questions."
+            read -r -p "  Type ERASE (capital letters) to confirm, anything else cancels: " word || word=""
+            [ "$word" = ERASE ] || { echo "Nothing changed."; return 0; }
+            local todo=() ti=0; for c in screen webcam timelapse shell-command shaketune spoolman acepro obico octoapp octoeverywhere fluidd moonraker klipper; do
+                [ "$(addon_status "$c")" = "not installed" ] || todo+=("$c"); done
+            local tn=$(( ${#todo[@]} + 1 ))
+            for c in "${todo[@]}"; do
+                progress_bar "$ti" "$tn" "Removing $c (step $((ti+1)) of $tn)"; ti=$((ti+1))
+                ( ARG1="$c"; REMOVE_CONFIRMED=1; REMOVE_DATA=1; FORCE=1; PROG_QUIET=1; do_remove_addon )
+            done
+            progress_bar "$ti" "$tn" "Removing the system files and leftovers (step $tn of $tn)"
+            remove_python39
+            [ -f "$STATE" ] && uninstall_system_files
+            [ -f "$NETMGR_STATE" ] && ( ARG1=network-manager; REMOVE_CONFIRMED=1; FORCE=1; PROG_QUIET=1; do_remove_addon )
+            SUDO systemctl stop klipper 2>/dev/null; SUDO systemctl stop moonraker 2>/dev/null
+            rm_path "$HOME_DIR/printer_data" "$HOME_DIR/TM_T1"
+            for g in backups bundles logs stage moved fluiddcopies cfgcopies downloads records; do
+                echo "$(cleanup_paths "$g")" | while IFS= read -r f; do
+                    [ -n "$f" ] || continue
+                    if [ "$g" = logs ]; then   # this run's own log stays, it is still being written
+                        for f in "$f"/*; do [ "$f" = "${LOG_FILE:-}" ] || [ "$f" = "${LOG_FILE:-}.raw" ] || rm_path "$f"; done
+                    else rm_path "$f"; fi
+                done
+            done
+            progress_bar "$tn" "$tn" "Done"
+            print_success "Everything was erased. Kept: the installer folder ($REPO_DIR). Install again with: cd $REPO_DIR && ./installer.sh" ;;
+        *) die_with_fix "unknown name '${name}'." "use one of: screen, network-manager, webcam, timelapse, shell-command, shaketune, spoolman, acepro, obico, octoapp, octoeverywhere, fluidd, moonraker, klipper, data, system, cleanup, all, erase." ;;
+    esac
+}
+
+# ============================================================================
+# Menu (plain numbered lists). Every entry runs the same installer options you can type yourself.
+# ============================================================================
+menu_pause() { [ -t 0 ] && { read -r -p "  Press Enter to go back... " _ || true; }; return 0; }
+menu_run() { echo; bash "$SCRIPT_DIR/installer.sh" "$@"; local rc=$?; echo; menu_pause; return $rc; }
+menu_read() {   # prompt -> sets REPLY_MENU; returns 1 at end of input
+    local a; read -r -p "  $1 " a || return 1; REPLY_MENU="$(echo "$a" | tr -d '[:space:]')"; return 0
+}
+menu_item() { if [ -n "$3" ]; then printf '   %s) %-28s %b%s%b\n' "$1" "$2" "$DIM" "$3" "$NC"; else printf '   %s) %s\n' "$1" "$2"; fi; }
+
+addon_status() {   # name -> installed|running|not installed
+    case "$1" in
+        screen)   [ -d "$KS_DIR" ] && { [ "$(service_state KlipperScreen)" = active ] && echo running || echo installed; } || echo "not installed" ;;
+        network-manager) [ "$(service_state NetworkManager)" = active ] && echo running || { [ "$(service_enabled NetworkManager)" = enabled ] && echo installed || echo "not installed"; } ;;
+        webcam)   [ -d "$HOME_DIR/crowsnest" ] && { [ "$(service_state crowsnest)" = active ] && echo running || { camera_present && echo installed || echo "waiting for a camera"; }; } || echo "not installed" ;;
+        timelapse) [ -d "$HOME_DIR/moonraker-timelapse" ] && echo installed || echo "not installed" ;;
+        shell-command) [ -f "$HOME_DIR/klipper/klippy/extras/gcode_shell_command.py" ] && echo installed || echo "not installed" ;;
+        zr-tools) [ -f "$HOME_DIR/printer_data/config/zr_tools.cfg" ] && grep -qE '^[[:space:]]*\[include[[:space:]]+zr_tools\.cfg\]' "$HOME_DIR/printer_data/config/printer.cfg" 2>/dev/null && echo installed || echo "not installed" ;;
+        spoolman) [ -d "$HOME_DIR/Spoolman" ] && { [ "$(service_state Spoolman)" = active ] && echo running || echo installed; } || echo "not installed" ;;
+        acepro)   if ace_installed; then echo installed; elif [ -d "$(ace_dir)" ]; then echo "downloaded, not set up"; else echo "not installed"; fi ;;
+        shaketune) [ -L "$HOME_DIR/klipper/klippy/extras/shaketune" ] && echo installed || { [ -d "$HOME_DIR/klippain_shaketune" ] && echo "downloaded, not linked" || echo "not installed"; } ;;
+        fluidd)   [ -d "$HOME_DIR/fluidd" ] && echo installed || echo "not installed" ;;
+        moonraker) [ -d "$HOME_DIR/moonraker" ] && echo installed || echo "not installed" ;;
+        klipper)  [ -d "$HOME_DIR/klipper" ] && echo installed || echo "not installed" ;;
+        data)     [ -d "$HOME_DIR/printer_data" ] && echo "present" || echo "not present" ;;
+        system)   [ -f "$STATE" ] && echo installed || echo "nothing recorded" ;;
+        obico|octoapp|octoeverywhere)
+            local d=$1 sv=$1; [ "$1" = obico ] && { d=moonraker-obico; sv=moonraker-obico; }
+            [ -d "$HOME_DIR/$d" ] && { if [ "$TESTING" = 1 ]; then echo installed; elif [ "$(service_state "$sv")" = active ]; then echo running; else echo "downloaded, not running"; fi; } || echo "not installed" ;;
+    esac
+}
+
+menu_status() {
+    if [ -d "$HOME_DIR/kiauh" ]; then print_warning "KIAUH was found on this Pi. Do not use it for Klipper or Moonraker here: it would replace the Klipper and Moonraker this installer pinned to the tested versions. This installer manages them."; fi
+    if [ ! -f "$CONF" ]; then print_info "Not installed yet. Choose 1 to install."; return 0; fi
+    echo "  Klipper: $(service_state klipper)   Moonraker: $(service_state moonraker)   nginx: $(service_state nginx)"
+    local ps; ps="$(print_state)"; case "$ps" in printing|paused) print_warning "A print is active ($ps): changes are blocked until it ends." ;; esac
+    if [ -d "$REPO_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+        [ -n "${WM_TEST_NO_FETCH:-}" ] || timeout 6 git -C "$REPO_DIR" fetch --quiet 2>/dev/null
+        local up behind; up="$(git -C "$REPO_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; [ -n "$up" ] || up=origin/main
+        behind="$(git -C "$REPO_DIR" rev-list --count "HEAD..$up" 2>/dev/null)"
+        if [ "${behind:-0}" -gt 0 ] 2>/dev/null; then print_info "$behind new change(s) on GitHub (version $(git -C "$REPO_DIR" show "$up:VERSION" 2>/dev/null | head -1)). Choose 2 to see them and update."; fi
+    fi
+}
+
+menu_updates() {
+    while true; do
+        echo; echo "  Update"
+        menu_item 1 "See what is new" "Reads GitHub, changes nothing"
+        menu_item 2 "Update now" "downloads the newest version (no git needed), then updates services, packages, panel and add-ons (printer_data is kept)"
+        menu_item 0 "Back" ""
+        menu_read "Choose:" || return 0
+        case "$REPLY_MENU" in
+            1) menu_run --check-updates ;;
+            2) bash "$SCRIPT_DIR/installer.sh" --get-latest || { menu_pause; continue; }
+               if [ ! -f "$CONF" ]; then   # nothing to update yet: the installer folder is now current, so say so instead of failing
+                   echo; print_info "Nothing is installed on this Pi yet, so there is nothing to update. The installer files above are the newest. Go back and choose 1 (Install)."
+                   menu_pause; exec bash "$SCRIPT_DIR/installer.sh" --menu
+               fi
+               bash "$SCRIPT_DIR/installer.sh" --update; echo; menu_pause
+               exec bash "$SCRIPT_DIR/installer.sh" --menu ;;   # restart the menu so the new version is the one running
+            0|"") return 0 ;;
+            *) echo "  Choose a number from the list." ;;
+        esac
+    done
+}
+
+menu_addons() {
+    local k items=(webcam timelapse shell-command shaketune spoolman acepro zr-tools)
+    declare -A label=([screen]="Touchscreen (KlipperScreen)" [shaketune]="Klippain Shake&Tune" [spoolman]="Spoolman (filament spools)" [acepro]="Anycubic ACE Pro (feeder, dryer)" [network-manager]="NetworkManager (Network panel)" [webcam]="Webcam (crowsnest)" [timelapse]="Timelapse" [shell-command]="Klipper gcode shell command" [obico]="Obico for Klipper" [octoapp]="OctoApp" [octoeverywhere]="OctoEverywhere" [zr-tools]="ZR Tools macros (screen board)")
+    declare -A help=([acepro]="Klipper driver and config for the ACE Pro, from wm-ultra-fluidd-acepro-panel" [spoolman]="Filament spool tracking, shown in Fluidd (port 7912)" [shaketune]="Input shaper and vibration graphs (by Frix-x)" [network-manager]="Wi-Fi choice on the screen. Can drop the network until a reboot" [screen]="Screen plugged into the Pi, with the ZR Tools page" [webcam]="USB camera streams for Fluidd" [timelapse]="Moonraker timelapse + ffmpeg" [shell-command]="RUN_SHELL_COMMAND: run Linux commands from G-code" [obico]="Remote view and failure detection (obico.io account)" [octoapp]="Phone app notifications and control" [octoeverywhere]="Remote access, webcam and notifications (free account)" [zr-tools]="For the WonderMaker screen board: checks, then installs what is missing")
+    while true; do
+        echo; echo "  Add-ons"
+        local n=0; for k in "${items[@]}"; do n=$((n+1)); menu_item "$n" "${label[$k]}" "[$(addon_status "$k")] ${help[$k]}"; done
+        menu_item 0 "Back" ""
+        menu_read "Choose one to install, set up or remove:" || return 0
+        [ "$REPLY_MENU" = 0 ] || [ -z "$REPLY_MENU" ] && return 0
+        if ! [[ "$REPLY_MENU" =~ ^[0-9]+$ ]] || [ "$REPLY_MENU" -lt 1 ] || [ "$REPLY_MENU" -gt "${#items[@]}" ]; then echo "  Choose a number from the list."; continue; fi
+        k="${items[$((REPLY_MENU-1))]}"; local st; st="$(addon_status "$k")"
+        if [ "$k" = zr-tools ]; then menu_run --zr-tools; continue; fi   # checks first: says "already installed", or installs what is missing (nothing to remove: the macros do nothing without the screen)
+        if [ "$st" = "not installed" ]; then
+            ask_yn "Install ${label[$k]}?" n || continue
+            case "$k" in
+                screen) menu_run --update --only-addon screen --screen on ;;
+                network-manager) echo "  This can drop the network connection (SSH, Fluidd) when the Pi restarts. Nothing restarts by itself."; ask_yn "Still install it?" n && menu_run --update --only-addon network-manager --network-manager on ;;
+                webcam) menu_run --update --only-addon webcam --webcam on ;;
+                timelapse) menu_run --update --only-addon timelapse --timelapse on ;;
+                *) menu_run --update --only-addon "$k" "--$k" on ;;
+            esac
+        else
+            case "$k" in
+                webcam)
+                    echo "  The webcam is installed.   1) Set up the cameras again (how many, picture size, speed)   2) Remove the webcam service   0) Back"
+                    menu_read "Choose:" || continue
+                    case "$REPLY_MENU" in 1) menu_run --webcam-setup ;; 2) menu_run --remove webcam ;; *) ;; esac ;;
+                *) menu_run --remove "$k" ;;
+            esac
+        fi
+    done
+}
+
+menu_fix() {
+    while true; do
+        echo; echo "  Check and fix"
+        menu_item 1 "Doctor" "Finds problems, explains them, offers a fix for each (asks first)"
+        menu_item 2 "Repair" "Puts back services, nginx files, the can0 rule and groups (data untouched)"
+        menu_item 3 "Hardware test" "Read-only live test: USB bridge, can0, CAN devices, camera, services"
+        menu_item 4 "Quick check" "Report problems, change nothing"
+        menu_item 5 "Status" "One page: services, Klipper, Pi health, CAN ids, add-ons, newest backup"
+        menu_item 6 "Fix everything" "Doctor, then applies every safe fix after one question"
+        menu_item 0 "Back" ""
+        menu_read "Choose:" || return 0
+        case "$REPLY_MENU" in 1) menu_run --doctor ;; 2) menu_run --repair ;; 3) menu_run --hw-test ;; 4) menu_run --check ;; 5) menu_run --status ;; 6) menu_run --doctor --fix-all ;; 0|"") return 0 ;; *) echo "  Choose a number from the list." ;; esac
+    done
+}
+
+menu_backup() {
+    while true; do
+        echo; echo "  Backup and restore"
+        menu_item 1 "Back up my settings" "Saves config, calibration and database to ~/ultra-backup/settings (copy it off the Pi)"
+        menu_item 2 "Restore a backup" "Pick one from the list; a safety copy is made first"
+        menu_item 3 "Undo the last install" "Puts back the folders the installer moved aside"
+        menu_item 0 "Back" ""
+        menu_read "Choose:" || return 0
+        case "$REPLY_MENU" in
+            1) menu_run --backup ;;
+            2) menu_restore ;;
+            3) menu_run --undo ;;
+            0|"") return 0 ;; *) echo "  Choose a number from the list." ;;
+        esac
+    done
+}
+
+menu_restore() {   # shows where the backups are kept and lets you choose one by number
+    local dir="$WMB" files=() f n i extra
+    echo; echo "  Restore a backup"
+    echo "  Backups made by this installer are kept in: $dir"
+    mapfile -t files < <(ls -1t "$dir"/wm-backup-*.tgz 2>/dev/null)
+    if [ "${#files[@]}" = 0 ]; then echo "  There are no backups in that folder yet. Use 'Back up my settings' first, or copy a backup file there."
+    else
+        i=0; for f in "${files[@]}"; do i=$((i+1)); printf '   %s) %s   %s   %s\n' "$i" "$(basename "$f")" "$(du -h "$f" | cut -f1)" "$(date -r "$f" '+%Y-%m-%d %H:%M' 2>/dev/null)"; done
+    fi
+    extra=$(( ${#files[@]} + 1 ))
+    menu_item "$extra" "A backup file in another place" "You type its path"
+    menu_item 0 "Back" ""
+    menu_read "Choose a backup:" || return 0
+    case "$REPLY_MENU" in
+        0|"") return 0 ;;
+        *[!0-9]*) echo "  Choose a number from the list."; return 0 ;;
+    esac
+    n="$REPLY_MENU"
+    if [ "$n" = "$extra" ]; then
+        menu_read "Path of the .tgz file (Enter to cancel):" || return 0
+        [ -n "$REPLY_MENU" ] && menu_run --restore "$REPLY_MENU"
+    elif [ "$n" -ge 1 ] && [ "$n" -le "${#files[@]}" ]; then menu_run --restore "${files[$((n-1))]}"
+    else echo "  Choose a number from the list."; fi
+}
+
+menu_uninstall() {
+    local k n items=(screen network-manager webcam timelapse shell-command shaketune spoolman acepro obico octoapp octoeverywhere fluidd moonraker klipper data system cleanup all erase freespace)
+    declare -A label=([freespace]="Free up disk space" [screen]="Touchscreen (KlipperScreen)" [network-manager]="NetworkManager (switch back to dhcpcd)" [webcam]="Webcam (crowsnest)" [timelapse]="Timelapse" [shell-command]="Klipper gcode shell command" [shaketune]="Klippain Shake&Tune" [spoolman]="Spoolman (filament spools)" [acepro]="Anycubic ACE Pro (driver, config, project)" [obico]="Obico for Klipper" [octoapp]="OctoApp" [octoeverywhere]="OctoEverywhere" [fluidd]="Fluidd web page" [moonraker]="Moonraker" [klipper]="Klipper" [data]="My printer data" [system]="System files" [cleanup]="Clean up installer files" [all]="All programs" [erase]="Erase everything")
+    declare -A help=([freespace]="Shows what is safe to erase, with sizes and warnings; erases only what you pick" [network-manager]="Only if this installer switched you to it" [fluidd]="The page you open in the browser, with its nginx site" [moonraker]="The web API Fluidd and the add-ons use" [klipper]="The printer firmware host" [data]="printer.cfg, calibration, database, gcode files (a backup is made first)" [system]="Services, nginx files and the can0 rule the installer added" [cleanup]="Old backups, support bundles, moved-aside folders, saved copies, the installer folder" [all]="Every program above and the system files. Keeps my printer data, backups and installer files" [erase]="Programs, printer data, backups, logs and every installer file. Keeps only the installer folder")
+    while true; do
+        echo; echo "  Uninstall"; echo "  Choose what to remove. Each choice explains what goes and asks before it changes anything."
+        n=0; for k in "${items[@]}"; do n=$((n+1)); case "$k" in all|cleanup|erase|freespace) menu_item "$n" "${label[$k]}" "${help[$k]}" ;; *) menu_item "$n" "${label[$k]}" "[$(addon_status "$k")] ${help[$k]:-}" ;; esac; done
+        menu_item 0 "Back" ""
+        menu_read "Choose:" || return 0
+        [ "$REPLY_MENU" = 0 ] || [ -z "$REPLY_MENU" ] && return 0
+        if ! [[ "$REPLY_MENU" =~ ^[0-9]+$ ]] || [ "$REPLY_MENU" -lt 1 ] || [ "$REPLY_MENU" -gt "${#items[@]}" ]; then echo "  Choose a number from the list."; continue; fi
+        if [ "${items[$((REPLY_MENU-1))]}" = freespace ]; then menu_run --free-space; continue; fi
+        menu_run --remove "${items[$((REPLY_MENU-1))]}"
+        [ -f "$SCRIPT_DIR/installer.sh" ] || { echo "  The installer folder was removed, so the menu closes."; exit 0; }
+    done
+}
+
+menu_advanced() {
+    while true; do
+        echo; echo "  Advanced"
+        menu_item 1 "First start" "With the main board connected: checks, then starts Klipper"
+        menu_item 2 "Start Klipper again" "Undoes Stop Klipper: starts it now and at every boot, no checks"
+        menu_item 3 "Stop Klipper" "Stops Klipper and keeps it from starting at boot"
+        menu_item 4 "Support bundle" "A scrubbed .tgz of logs and config to share when asking for help"
+        menu_item 5 "Show the last log" "Where the log of the last run is, and its last lines"
+        menu_item 6 "Network and system" "Host name, time zone, clock, addresses"
+        menu_item 7 "Load cell board" "Firmware V2 for the load cell board (CELL): flash, factory firmware, restore, check the bootloader"
+        menu_item 0 "Back" ""
+        menu_read "Choose:" || return 0
+        case "$REPLY_MENU" in
+            7) menu_run --load-cell ;; 1) menu_run --first-start ;; 2) menu_run --start-klipper ;; 3) menu_run --disable-klipper ;; 4) menu_run --support-bundle ;; 5) menu_run --show-log ;; 6) menu_system ;;
+            0|"") return 0 ;; *) echo "  Choose a number from the list." ;;
+        esac
+    done
+}
+
+do_status() {   # read-only overview
+    print_header "Status (changes nothing)"
+    load_answers 2>/dev/null || true
+    local ip t mem
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    echo "  Installer $VERSION   printer: $(model_now)   host: $(hostname)${ip:+   address: http://$ip}"
+    echo "  Computer: $(pi_model_line)"
+    echo "  Uptime: $(uptime -p 2>/dev/null | sed 's/^up //')"
+    t="$(vcgencmd measure_temp 2>/dev/null | sed 's/temp=//')"
+    [ -z "$t" ] && [ -r /sys/class/thermal/thermal_zone0/temp ] && t="$(awk '{printf "%.1f C", $1/1000}' /sys/class/thermal/thermal_zone0/temp)"
+    echo "  Pi temperature: ${t:-unknown}   power: $(power_flags | sed 's/^0x0$/no under-voltage/;s/^$/unknown/')"
+    echo "  Disk: $(df -h / | awk 'NR==2{print $4" free of "$2" ("$5" used)"}')   Memory: $(free -m 2>/dev/null | awk 'NR==2{print $7" MB available of "$2" MB"}')"
+    echo
+    echo "  Services: Klipper $(service_state klipper)   Moonraker $(service_state moonraker)   nginx $(service_state nginx)"
+    local info st; info="$(api_get /server/info)"
+    st="$(echo "$info" | grep -o '"klippy_state": *"[a-z_]*"' | head -1 | sed 's/.*: *"//;s/"//')"
+    echo "  Klipper reports: ${st:-Moonraker does not answer}"
+    local ps; ps="$(print_state)"; [ -n "$ps" ] && echo "  Print: $ps"
+    local can="not present"; ip link show can0 >/dev/null 2>&1 && { ip link show can0 2>/dev/null | grep -q 'UP' && can="up" || can="down"; }
+    echo "  CAN bus (can0): $can"
+    local f u n=0 ph=0; while read -r f u; do n=$((n+1)); case "$u" in ??0000000000) ph=$((ph+1)); echo "    placeholder uuid in $(basename "$f"): $u (not a real board id)" ;; esac; done < <(cfg_uuids)
+    echo "  CAN ids in the config: $n   placeholders: $ph"
+    echo
+    echo "  Add-ons:"
+    local k; for k in screen network-manager webcam timelapse shell-command shaketune spoolman acepro obico octoapp octoeverywhere zr-tools; do printf '    %-18s %s\n' "$k" "$(addon_status "$k")"; done
+    echo
+    local last; last="$(ls -1t "$WMB"/*.tgz 2>/dev/null | head -1)"
+    echo "  Newest backup: ${last:-none yet (./installer.sh --backup)}"
+    last="$(ls -1t "$LOG_DIR"/installer-*.log 2>/dev/null | head -1)"
+    echo "  Newest installer log: ${last:-none}"
+    [ -d "$REPO_DIR/.git" ] && echo "  This copy of the installer: $(git -C "$REPO_DIR" log -1 --format='%h %cd' --date=short 2>/dev/null)"
+}
+
+do_system_info() {   # read-only
+    print_header "Network and system (changes nothing)"
+    echo "  Host name:  $(hostname)   (reachable as $(hostname).local on most networks)"
+    echo "  Time zone:  $(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)   clock synchronised: $(ntp_ok && echo yes || echo no)   now: $(date '+%F %T')"
+    echo "  Addresses:"; ip -br addr 2>/dev/null | awk '$1!="lo"{printf "    %-10s %-8s %s %s\n",$1,$2,$3,$4}'
+    local ssid; ssid="$(iwgetid -r 2>/dev/null)"; [ -n "$ssid" ] && echo "  Wi-Fi network: $ssid"
+    echo "  Gateway:    $(ip route 2>/dev/null | awk '/^default/{print $3; exit}')"
+    echo "  Network manager: $(if systemctl is-active NetworkManager >/dev/null 2>&1; then echo NetworkManager; elif systemctl is-active dhcpcd >/dev/null 2>&1; then echo dhcpcd; else echo unknown; fi)"
+}
+do_set_timezone() {   # name, e.g. America/Toronto
+    local tz="${1:-$ARG1}"
+    [ -n "$tz" ] || die_with_fix "no time zone given." "./installer.sh --set-timezone America/Toronto  (the list: timedatectl list-timezones)"
+    if [ "$TESTING" != 1 ]; then timedatectl list-timezones 2>/dev/null | grep -qx "$tz" || die_with_fix "'$tz' is not a known time zone." "see the list with: timedatectl list-timezones"; fi
+    echo "  The time zone changes the clock shown in Fluidd and the time on timelapse videos and logs. Nothing restarts."
+    ask_yn "Set the time zone to $tz?" y || { echo "Nothing changed."; return 0; }
+    SUDO timedatectl set-timezone "$tz"
+    print_success "Time zone: $tz"
+}
+do_set_hostname() {   # name
+    local h="${1:-$ARG1}"
+    [ -n "$h" ] || die_with_fix "no host name given." "./installer.sh --set-hostname myprinter"
+    echo "$h" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$' || die_with_fix "'$h' is not a valid host name." "use lower-case letters, digits and '-', up to 32 characters, not starting or ending with '-'."
+    guard_not_printing
+    echo "  The Pi will be reached as $h.local from now on. The old name $(hostname).local stops working, and bookmarks or slicer printer entries that use it must be changed. Your SSH session keeps working; the new name is used everywhere after a reboot."
+    ask_yn "Change the host name to $h?" n || { echo "Nothing changed."; return 0; }
+    local old; old="$(hostname)"
+    [ "$DRY" = 1 ] || [ "$TESTING" = 1 ] || SUDO sed -i "s/^\(127\.0\.1\.1[[:space:]]\+\).*/\1$h/" /etc/hosts   # first, so sudo never says "unable to resolve host"
+    SUDO hostnamectl set-hostname "$h"
+    print_success "Host name changed from $old to $h. Reboot when you are ready: sudo reboot"
+}
+menu_system() {
+    while true; do
+        echo; echo "  Network and system"
+        menu_item 1 "Show" "Host name, time zone, clock, addresses, Wi-Fi, gateway"
+        menu_item 2 "Set the time zone" "Clock, timelapse and log times"
+        menu_item 3 "Change the host name" "The name.local address of this Pi (asks first)"
+        menu_item 0 "Back" ""
+        menu_read "Choose:" || return 0
+        case "$REPLY_MENU" in
+            1) menu_run --system-info ;;
+            2) local tz; read -r -p "  Time zone (for example America/Toronto): " tz || continue; [ -n "$tz" ] && menu_run --set-timezone "$tz" ;;
+            3) local hn; read -r -p "  New host name (for example wmprinter): " hn || continue; [ -n "$hn" ] && menu_run --set-hostname "$hn" ;;
+            0|"") return 0 ;; *) echo "  Choose a number from the list." ;;
+        esac
+    done
+}
+
+do_menu() {
+    load_answers || true
+    [ -f "$CONF" ] && [ "${WM_MENU_NO_POLKIT:-0}" != 1 ] && polkit_check_and_fix
+    while true; do
+        echo; menu_status; echo
+        menu_item 1 "Install or reinstall" "Sets up Klipper, Moonraker and Fluidd; asks a few plain questions"
+        menu_item 2 "Update" "See what is new, then update (your printer_data is kept)"
+        menu_item 3 "Add-ons" "Touchscreen, webcam, timelapse, shell command, Shake&Tune, Spoolman, Obico, OctoApp, OctoEverywhere"
+        menu_item 4 "Check and fix" "Doctor, repair, hardware test"
+        menu_item 5 "Backup and restore" "Save and restore config, calibration and database"
+        menu_item 6 "Uninstall" "Remove any add-on, Fluidd, Moonraker, Klipper, your data, or erase everything"
+        menu_item 7 "Advanced" "First start, start or stop Klipper, support bundle, network and system"
+        menu_item 8 "Dry run of the install" "Asks the same questions, shows every change, changes nothing"
+        menu_item 0 "Exit" ""
+        menu_read "Choose:" || { echo; return 0; }
+        case "$REPLY_MENU" in
+            1) ask_yn "Run the install now? It asks its own questions first." y && menu_run --install ;;
+            2) menu_updates ;; 3) menu_addons ;; 4) menu_fix ;; 5) menu_backup ;; 6) menu_uninstall ;; 7) menu_advanced ;;
+            8) menu_run --install --dry-run ;;
+            0|q|Q|"") return 0 ;;
+            *) echo "  Choose a number from the list." ;;
+        esac
+    done
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+# ----------------------------------------------------------------------------
+# Log of every run that changes something: ~/wm-install-logs/installer-MODE-DATE.log
+# At a terminal the installer re-runs itself inside `script`, so the terminal behaves exactly as before (colours, prompts, the add-ons'
+# own questions) and everything shown is recorded. Without a terminal the output is copied with tee. Passwords and tokens are removed,
+# colour codes are removed, progress bars are reduced to their last line. The newest 20 logs are kept.
+# ----------------------------------------------------------------------------
+LOG_DIR="$HOME_DIR/wm-install-logs"; LOG_FILE=""
+scrub_secrets() { sed -E 's/((password|passwd|token|api_?key|secret|ssid|psk)[[:space:]]*[:=][[:space:]]*).*/\1<removed>/I'; }
+clean_log() {
+    [ -f "$LOG_FILE.raw" ] || return 0
+    python3 - "$LOG_FILE.raw" <<'PY' 2>/dev/null | scrub_secrets > "$LOG_FILE" || scrub_secrets < "$LOG_FILE.raw" > "$LOG_FILE"
+import re, sys
+ansi = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]")
+for raw in open(sys.argv[1], errors="replace").read().split("\n"):
+    if raw.startswith("Script started on") or raw.startswith("Script done on"): continue
+    line = ansi.sub("", raw)
+    parts = [x for x in line.split("\r") if x.strip() != ""]
+    line = parts[-1] if parts else ""
+    line = re.sub(r".\x08", "", line).replace("\x08", "")
+    print(line.rstrip())
+PY
+    rm -f "$LOG_FILE.raw"; chmod 600 "$LOG_FILE" 2>/dev/null
+    ls -1t "$LOG_DIR"/installer-*.log 2>/dev/null | tail -n +21 | while IFS= read -r f; do rm -f "$f"; done
+}
+start_logging() {
+    [ "${WM_LOGGING:-0}" = 1 ] && { LOG_FILE="${WM_LOG_FILE:-}"; return 0; }
+    [ "$DRY" = 1 ] && return 0
+    [ "$TESTING" = 1 ] && [ "${WM_FORCE_LOG:-0}" != 1 ] && return 0
+    case " install update repair remove restore rollback undo uninstall firststart startklipper disable doctor hwtest backup screenlayout screenremove settz sethost " in *" $MODE "*) ;; *) return 0 ;; esac
+    [ "$MODE" = install ] && [ "$ORIG_ARGC" = 0 ] && [ -t 0 ] && [ -t 1 ] && [ "${WM_ASSUME_YES:-0}" != 1 ] && return 0   # that opens the menu
+    mkdir -p "$LOG_DIR" 2>/dev/null && chmod 700 "$LOG_DIR" 2>/dev/null || return 0
+    LOG_FILE="$LOG_DIR/installer-$MODE-$STAMP.log"
+    if [ -t 0 ] && [ -t 1 ] && [ "${WM_NO_SCRIPT:-0}" != 1 ] && command -v script >/dev/null 2>&1; then
+        local rc; WM_LOGGING=1 WM_LOG_FILE="$LOG_FILE" script -q -f -e -c "$(printf '%q ' bash "$0" "${ORIG_ARGS[@]}")" "$LOG_FILE.raw"; rc=$?
+        clean_log; echo "Log of this run: $LOG_FILE"; exit $rc
+    fi
+    exec > >(tee -a "$LOG_FILE.raw") 2>&1
+    trap 'sleep 0.5; clean_log' EXIT
+}
+do_show_log() {
+    local f; f="$(ls -1t "$LOG_DIR"/installer-*.log 2>/dev/null | head -n1)"
+    [ -n "$f" ] || { print_info "No log yet. Runs that change something write one to $LOG_DIR."; return 0; }
+    echo "  Newest log: $f"; echo "  All logs:   $LOG_DIR"; echo "  ---- last 40 lines ----"; tail -n 40 "$f"
+}
+start_logging
+echo -e "${BLUE}WonderMaker Ultra Raspberry Pi, vanilla Klipper - installer $VERSION${NC}"
+[ "$DRY" = 1 ] && print_info "DRY RUN: nothing will be changed."
+# No options, at a terminal: open the menu (also on an empty Pi; choose 1 there to install).
+if [ "$ORIG_ARGC" = 0 ] && [ "$MODE" = install ] && [ -t 0 ] && [ -t 1 ] && [ "${WM_ASSUME_YES:-0}" != 1 ]; then MODE=menu; fi
+case "$MODE" in
+    menu)       do_menu; exit 0 ;;
+    remove)     do_remove_addon; exit $? ;;
+    check)      do_check; exit 0 ;;
+    firststart) do_first_start ask; exit $? ;;
+    hwtest)     do_hw_test; exit 0 ;;
+    zrtools)    do_zr_tools; exit $? ;;
+    pisensors)  guard_not_printing; step_pi_sensors; for w in "${WARNINGS[@]}"; do print_warning "$w"; done; exit 0 ;;
+    ultrabackup) step_ultrabackup; python3 -I "$(ultrabackup_dst)" status --home "$HOME_DIR" 2>/dev/null; for w in "${WARNINGS[@]}"; do print_warning "$w"; done; exit 0 ;;
+    loadcell)   do_load_cell; exit $? ;;
+    logs)       step_logs; step_blackbox; for w in "${WARNINGS[@]}"; do print_warning "$w"; done; exit 0 ;;
+    wifi)       step_wifi; [ -n "$(wifi_dev)" ] || print_info "The Pi's network is not Wi-Fi: nothing to do."; for w in "${WARNINGS[@]}"; do print_warning "$w"; done; exit 0 ;;
+    rpicfg)     do_rpicfg; exit $? ;;
+    light)      do_light; for w in "${WARNINGS[@]}"; do print_warning "$w"; done; exit 0 ;;
+    webcamsetup) do_webcam_setup; exit $? ;;
+    pidcfg)     do_pidcfg; exit $? ;;
+    importset)  do_import_settings; exit $? ;;
+    canids)     do_can_ids; exit $? ;;
+    extsetup)   do_extruder_setup_cmd; exit $? ;;
+    cfgmerge)   do_cfgmerge; exit $? ;;
+    freespace)  do_free_space; exit $? ;;
+    doctor)     do_doctor; exit $? ;;
+    repair)     do_repair; exit 0 ;;
+    update)     do_update; exit 0 ;;
+    checkupdates) do_check_updates; exit $? ;;
+    getlatest)  do_get_latest; exit $? ;;
+    updateall)  do_update_all; exit $? ;;
+    updateboards) do_update_boards; exit $? ;;
+    board)      do_board; exit $? ;;
+    undo)       do_undo; exit 0 ;;
+    backup)     do_backup; exit 0 ;;
+    restore)    do_restore; exit 0 ;;
+    rollback)   do_rollback; exit 0 ;;
+    bundle)     do_support_bundle; exit 0 ;;
+    showlog)    do_show_log; exit 0 ;;
+    disable)    do_disable; exit 0 ;;
+    startklipper) do_start_klipper; exit $? ;;
+    status)     do_status; exit 0 ;;
+    sysinfo)    do_system_info; exit 0 ;;
+    settz)      do_set_timezone; exit 0 ;;
+    sethost)    do_set_hostname; exit 0 ;;
+    uninstall)  do_uninstall; exit 0 ;;
+    screentest) do_screen_test; exit 0 ;;
+    screenlayout) do_screen_layout; exit 0 ;;
+    screenremove) do_screen_remove; exit 0 ;;
+esac
+
+if [ -n "$SCREEN_LAYOUT" ] && [ "$MODE" = install ] && [ "$WANT_SCREEN" = ask ] && [ -f "$CONF" ]; then do_screen_layout; exit 0; fi
+check_system
+preflight
+ask_model
+choose_source
+questions
+show_plan
+[ "$DRY" = 1 ] || ask_yn "Go ahead?" y || { echo "Nothing changed."; exit 0; }
+guard_not_printing
+rpi_names_migrate
+save_answers
+PROG_STEPS=14
+step_packages; step_groups; step_python; step_unpack; step_model; step_rpicfg; step_light; step_moonraker_tune; step_cfgmerge; step_pidcfg; step_venvs; step_modules
+step_services; step_hostmcu; step_nginx; step_can; step_panel; step_screen; step_netmgr; step_wifi; step_logs; step_blackbox; step_timelapse; step_shellcmd; step_shaketune; step_spoolman; step_acepro; moonraker_add_update_entries; step_pi_updater; step_panel_updater; step_remote; step_crowsnest; step_start
+save_answers
+step_cfgindex
+step_ultrabackup   # after the panel and the add-ons, which write backups of their own
+restart_klipper_after
+self_test
+pi_sensors_in_flow
+if [ "$AUTOSTART" = 1 ] && [ "$DRY" != 1 ]; then do_first_start auto || true; fi   # last: enabling and starting the services
+step_load_cell   # after Klipper runs: the load cell board on firmware V2? (a full install only, never an update)
+step_fluidd_categories   # again, now that Klipper runs: the macro names are only known once Klipper has loaded them (the first try above runs before Klipper starts)
+step_ultrabackup   # again: the board matching, the load cell flash and the Wi-Fi step wrote backups after the first sweep
+[ -f "$(canmatch_pending)" ] && warn_later "Extruder Setup has NOT been done yet, so the tool head ids may be in the wrong order: hang all four tool heads in their docks, then ./installer.sh --extruder-setup (or WM_EXTRUDER_SETUP in Fluidd)"
+
+print_header "Done"
+[ "$PROG_STEPS" -gt 0 ] && progress_bar 100 100 "All $PROG_STEPS steps finished"
+if [ ${#WARNINGS[@]} -gt 0 ]; then for w in "${WARNINGS[@]}"; do print_warning "$w"; done; fi
+IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+print_success "Open Fluidd at http://${IP:-<pi-address>}/"
+[ "$(service_state klipper)" = active ] || echo "Klipper is off. When the main board is connected: ./installer.sh --first-start"

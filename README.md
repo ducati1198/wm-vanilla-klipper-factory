@@ -15,6 +15,9 @@ of the WonderMaker ZR Ultra-S, so the printer works without a Raspberry Pi.
 
 KlipperScreen already on the board is **not touched**. The touch UI choice (KlipperScreen on a diet or GuppyScreen) comes later.
 
+## What is in this repo
+See `docs/PORTING.md`: the Pi installer of WM_Ultra_Vanilla_Klipper is the base (KlipperScreen option removed), with copies of the Fluidd/ACE panel and the load cell tools under `vendor/`.
+
 ## Use
 ```
 ./install.sh --check      # look only

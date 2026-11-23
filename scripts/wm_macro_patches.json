@@ -1,0 +1,667 @@
+[
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    M118 START_PRINT begin\n    {% if \"gcode_macro WM_CHAMBER_LIGHT\" in printer %}\n        WM_CHAMBER_LIGHT STATE=on\n    {% endif %}\n    {% set BED = params.BED|int %}",
+  "old": "    M118 START_PRINT begin\n    {% set BED = params.BED|int %}",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    M190 S{BED}\n    WIPE_NOZZLE                    # T0 is the Z reference of the whole print, wipe it once more right before the mesh\n    {% if adaptive_mesh_enable == True %}                              ",
+  "old": "    M190 S{BED}\n    {% if adaptive_mesh_enable == True %}                              ",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 3,
+  "new": "\n\n\n[gcode_macro _WM_PAUSE_STATE]\ndescription: Remembers that PAUSE already ran for this pause. Running it clears a flag that is left over (WM_PRINT_END_WATCH runs it)\nvariable_active: 0\ngcode:\n    {% if active|int == 1 and printer.print_stats.state != \"paused\" %}\n        SET_GCODE_VARIABLE MACRO=_WM_PAUSE_STATE VARIABLE=active VALUE=0\n    {% endif %}\n\n[gcode_macro PAUSE]\nrename_existing: BASE_PAUSE\ngcode:",
+  "old": "\n\n\n[gcode_macro PAUSE]\nrename_existing: BASE_PAUSE\ngcode:",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 4,
+  "new": "gcode:\n    {% if printer[\"gcode_macro _WM_PAUSE_STATE\"].active|int == 1 and printer.print_stats.state == \"paused\" %}\n        RESPOND MSG=\"The print is already paused. PAUSE ignored\"\n    {% else %}\n    SET_GCODE_VARIABLE MACRO=_WM_PAUSE_STATE VARIABLE=active VALUE=1\n    RESPOND MSG=\"Print paused. Parking the tool head.\"",
+  "old": "gcode:\n    RESPOND MSG=\"Print paused. Parking the tool head.\"",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 5,
+  "new": "    \n    # keep the tool map of this print for RESUME (only once START_PRINT is done: it changes box_modify_t0 for a moment)\n    {% if printer[\"gcode_macro START_PRINT\"].print_body_ready %}\n        {% for i in range(4) %}\n            SAVE_VARIABLE VARIABLE=box_modify_t{i}_backup VALUE={printer.save_variables.variables[\"box_modify_t%d\" % i]|default(i)|int}\n        {% endfor %}\n    {% endif %}\n    # restore the identity mapping first, then turn heaters off, so that when remapped M104 Tx does not miss or wrongly switch off a physical head",
+  "old": "    \n    # restore the identity mapping first, then turn heaters off, so that when remapped M104 Tx does not miss or wrongly switch off a physical head",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 6,
+  "new": "    M106 P2 S0\n    SET_STEPPER_ENABLE STEPPER={printer.toolhead.extruder} ENABLE=0\n    {% endif %}\n\n",
+  "old": "    M106 P2 S0\n    SET_STEPPER_ENABLE STEPPER={printer.toolhead.extruder} ENABLE=0\n\n",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 7,
+  "new": "gcode:\n    {% if printer.print_stats.state != \"paused\" %}\n        RESPOND MSG=\"Nothing to resume. The print is not paused\"\n    {% else %}\n    RESPOND MSG=\"Resuming the print. Heating the bed and nozzles first.\"",
+  "old": "gcode:\n    RESPOND MSG=\"Resuming the print. Heating the bed and nozzles first.\"",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 8,
+  "new": "    M24\n    SET_GCODE_VARIABLE MACRO=_WM_PAUSE_STATE VARIABLE=active VALUE=0\n    {% if pr_ace %}",
+  "old": "    M24\n    {% if pr_ace %}",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 9,
+  "new": "    {% endif %}\n    RESPOND MSG=\"Print resumed\"\n    {% endif %}\n\n",
+  "old": "    {% endif %}\n    RESPOND MSG=\"Print resumed\"\n\n",
+  "version": "2.8.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 1,
+  "new": "        # { action_respond_info(\"SET GCODE OFFSET X:%6f Y:%6f Z:%6f\" % (offset_x, offset_y, offset_z)) }\n        {% set sv = printer.save_variables.variables %}\n        {% set trim = sv.wm_z_trim_all|default(0)|float + sv[\"wm_z_trim_t%d\" % tool]|default(0)|float %}\n        {% set ename = \"extruder\" if tool == 0 else \"extruder%d\" % tool %}\n        {% set target = printer[ename].target|float if ename in printer else 0 %}\n        {% set growth = sv.wm_nozzle_growth|default(0)|float %}\n        {% set ref = sv.wm_z_ref_temp|default(140)|float %}\n        {% set heat = growth * (target - ref) if (growth > 0 and target > ref) else 0 %}\n        SET_GCODE_OFFSET X={offset_x} Y={offset_y} Z={(offset_z + trim + heat)|round(5)} move=1\n    {% endif %}",
+  "old": "        # { action_respond_info(\"SET GCODE OFFSET X:%6f Y:%6f Z:%6f\" % (offset_x, offset_y, offset_z)) }\n        SET_GCODE_OFFSET X={offset_x} Y={offset_y} Z={offset_z} move=1\n    {% endif %}",
+  "version": "2.8.0"
+ },
+ {
+  "file": "offset_calibrate.cfg",
+  "n": 1,
+  "new": "    # G0 Z6.5 F2000 # UPDATE THIS WITH YOUR POSITION\n    \n\n[gcode_macro _APPLY_PRE_Z_OFFSET]",
+  "old": "    # G0 Z6.5 F2000 # UPDATE THIS WITH YOUR POSITION\n    \n\n[gcode_macro TEST_W4]\ngcode:\n    G28\n    G1 Z25\n    # CS_WEIGHT_SWITCH CHIP=2\n    probe samples=1\n\n[gcode_macro _APPLY_PRE_Z_OFFSET]",
+  "version": "2.8.0"
+ },
+ {
+  "file": "extruder0.cfg",
+  "n": 1,
+  "new": "runout_gcode:\n    {% if printer.print_stats.state == \"printing\" %}\n        RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n        UPDATE_DELAYED_GCODE ID=delayed_pause0 DURATION=2.5\n    {% endif %}\n",
+  "old": "runout_gcode:\n    RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n    UPDATE_DELAYED_GCODE ID=delayed_pause0 DURATION=2.5\n",
+  "version": "2.8.0"
+ },
+ {
+  "file": "extruder1.cfg",
+  "n": 1,
+  "new": "runout_gcode:\n    {% if printer.print_stats.state == \"printing\" %}\n        RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n        UPDATE_DELAYED_GCODE ID=delayed_pause1 DURATION=2.5\n    {% endif %}\n",
+  "old": "runout_gcode:\n    RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n    UPDATE_DELAYED_GCODE ID=delayed_pause1 DURATION=2.5\n",
+  "version": "2.8.0"
+ },
+ {
+  "file": "extruder2.cfg",
+  "n": 1,
+  "new": "runout_gcode:\n    {% if printer.print_stats.state == \"printing\" %}\n        RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n        UPDATE_DELAYED_GCODE ID=delayed_pause2 DURATION=2.5\n    {% endif %}\n",
+  "old": "runout_gcode:\n    RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n    UPDATE_DELAYED_GCODE ID=delayed_pause2 DURATION=2.5\n",
+  "version": "2.8.0"
+ },
+ {
+  "file": "extruder3.cfg",
+  "n": 1,
+  "new": "runout_gcode:\n    {% if printer.print_stats.state == \"printing\" %}\n        RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n        UPDATE_DELAYED_GCODE ID=delayed_pause3 DURATION=2.5\n    {% endif %}\n",
+  "old": "runout_gcode:\n    RESPOND MSG=\"Filament runout detected, pausing in 2.5 seconds...\"\n    UPDATE_DELAYED_GCODE ID=delayed_pause3 DURATION=2.5\n",
+  "version": "2.8.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    M118 START_PRINT begin\n    {% if \"gcode_macro _WM_LIVEZ_RESET\" in printer %}\n        _WM_LIVEZ_RESET\n    {% endif %}\n    {% if \"gcode_macro WM_CHAMBER_LIGHT\" in printer %}",
+  "old": "    M118 START_PRINT begin\n    {% if \"gcode_macro WM_CHAMBER_LIGHT\" in printer %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    RESTORE_GCODE_STATE NAME=PAUSE MOVE=1 MOVE_SPEED=60 \n    {% if \"gcode_macro _WM_LIVEZ\" in printer %}\n        _WM_Z_TRIM_APPLY\n    {% endif %}\n    M24",
+  "old": "    RESTORE_GCODE_STATE NAME=PAUSE MOVE=1 MOVE_SPEED=60 \n    M24",
+  "version": "2.9.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 3,
+  "new": "    BED_MESH_CALIBRATE_BASE {rawparams}\n\n\n[gcode_macro M109]",
+  "old": "    BED_MESH_CALIBRATE_BASE {rawparams}\n\n[gcode_macro _START_PROBE]\nvariable_bed_temp = 0\ngcode = \n\t{% set PROBE_TEMP = 0 %}\n\t{% set MAX_TEMP = PROBE_TEMP + 5 %}\n\t{% set ACTUAL_TEMP = printer.extruder.temperature %}\n\t{% set TARGET_TEMP = printer.extruder.target %}\n\t# SET_GCODE_VARIABLE MACRO=START_PROBE VARIABLE=bed_temp VALUE={printer.heater_bed.target}\n\t# SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=0\n\t\n\t{% if TARGET_TEMP > PROBE_TEMP %}\n        { action_respond_info('Extruder temperature target of %.1fC is too high, lowering to %.1fC' % (TARGET_TEMP, PROBE_TEMP)) }\n        M106 S255\n        M104 S0\n        {% if ACTUAL_TEMP > MAX_TEMP %}\n            { action_respond_info('Extruder temperature %.1fC is still too high, waiting until below %.1fC' % (ACTUAL_TEMP, MAX_TEMP)) }\n            TEMPERATURE_WAIT SENSOR=extruder MAXIMUM=49\n        {% endif %}\n            M106 S0\n            G4 P1000\n    {% endif %}\n    \n\n[gcode_macro M109]",
+  "version": "2.9.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 4,
+  "new": "    SET_HEATER_TEMPERATURE HEATER={heater} TARGET={s}\n    {% if \"gcode_macro _WM_LIVEZ_HEAT\" in printer %}\n        _WM_LIVEZ_HEAT T={t} S={s}\n    {% endif %}\n    {% if s > 0 %}",
+  "old": "    SET_HEATER_TEMPERATURE HEATER={heater} TARGET={s}\n    {% if s > 0 %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 5,
+  "new": "    {% else %}\n        SET_HEATER_TEMPERATURE HEATER=extruder{t} TARGET={s}\n    {% endif %}\n    {% if \"gcode_macro _WM_LIVEZ_HEAT\" in printer %}\n        _WM_LIVEZ_HEAT T={t} S={s}\n    {% endif %}\n\t",
+  "old": "    {% else %}\n        SET_HEATER_TEMPERATURE HEATER=extruder{t} TARGET={s}\n    {% endif %}\n\t",
+  "version": "2.9.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 6,
+  "new": "        {% endif %}\n        {% if extruder_preheat_temp > 0 %}\n            M104 S0\n        {% endif %}\n    {% endif %}\n\n\n[gcode_macro _RGB_LOAD]",
+  "old": "        {% endif %}\n        {% if extruder_preheat_temp > 0 %}\n            M104 S0\n        {% endif %}\n    {% endif %}\n\n[gcode_macro _RGB_CLOSE]\ngcode:\n    {% set t  = params.T|default(0)|int %}\n    \n    {% if t == 0 %}\n      SET_LED LED=T0_RGB RED=0.0 GREEN=0.0 BLUE=0.0\n    {% elif t == 1 %}\n      SET_LED LED=T1_RGB RED=0.0 GREEN=0.0 BLUE=0.0\n    {% elif t == 2 %}\n      SET_LED LED=T2_RGB RED=0.0 GREEN=0.0 BLUE=0.0\n    {% elif t == 3 %}\n      SET_LED LED=T3_RGB RED=0.0 GREEN=0.0 BLUE=0.0\n    {% elif t == 99 %}\n    {% endif %}\n\n\n[gcode_macro _RGB_LOAD]",
+  "version": "2.9.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 1,
+  "new": "            M400\n            G4 P300\n",
+  "old": "            M400\n            G4 P1000\n",
+  "version": "2.9.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 2,
+  "new": "        UNLOCK\n        G0 Y310 F12000\n        M400",
+  "old": "        UNLOCK\n        G0 Y310 F6000\n        M400",
+  "version": "2.9.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 3,
+  "new": "\n        G0 Y310 F12000\n        G0 Y270 F12000",
+  "old": "\n        G0 Y310 F9600\n        G0 Y270 F12000",
+  "version": "2.9.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 4,
+  "new": "        {% endif %}\n    {% endif %}\n\n\n\n",
+  "old": "        {% endif %}\n    {% endif %}\n\n[gcode_macro _SAVE_SPEED]\nvariable_accel: 0\nvariable_velocity: 0\ngcode:\n    {% set accel = (printer.toolhead.max_accel)*0.5 %}\n    {% set velocity = printer.toolhead.max_velocity %}\n    {% set conf_max_accel = (printer.configfile.settings.printer.max_accel*0.5)|int %}\n    {% set conf_max_velocity = printer.configfile.settings.printer.max_velocity|int %}\n\n    SET_GCODE_VARIABLE MACRO=_SAVE_SPEED VARIABLE=accel VALUE={accel}\n    SET_GCODE_VARIABLE MACRO=_SAVE_SPEED VARIABLE=velocity VALUE={velocity}\n\n    {% if velocity != conf_max_velocity and accel != conf_max_accel %}\n        SET_VELOCITY_LIMIT VELOCITY={conf_max_velocity} ACCEL={conf_max_accel}\n        { action_respond_info(\"SAVE SPEED ACCEL%f VELOCITY%f\" % (accel, velocity)) }\n    {% elif velocity != conf_max_velocity and accel == conf_max_accel %}\n        SET_VELOCITY_LIMIT VELOCITY={conf_max_velocity}\n        { action_respond_info(\"SAVE SPEED  VELOCITY%f\" % (velocity)) }\n    {% elif velocity == conf_max_velocity and accel != conf_max_accel %}\n        SET_VELOCITY_LIMIT ACCEL={conf_max_accel}\n        { action_respond_info(\"SAVE SPEED ACCEL%f\" % (accel)) }\n    {% endif %}\n    # { action_respond_info(\"SAVE SPEED ACCEL%f VELOCITY%f\" % (accel, velocity)) }\n\n[gcode_macro _RESTORE_SPEED]\ngcode:\n    {% set accel_set = printer.toolhead.max_accel %}\n    {% set velocity_set = printer.toolhead.max_velocity %}\n    {% set vars = printer['gcode_macro _SAVE_SPEED'] %}\n    {% set accel = vars.accel %}\n    {% set velocity = vars.velocity %}\n\n    {% if velocity != velocity_set and accel != accel_set %}\n        SET_VELOCITY_LIMIT VELOCITY={accel} ACCEL={velocity}\n        { action_respond_info(\"RESTORE SPEED ACCEL%f VELOCITY%f\" % (accel, velocity)) }\n    {% elif velocity != velocity_set and accel == accel_set %}\n        SET_VELOCITY_LIMIT VELOCITY={velocity}\n        { action_respond_info(\"RESTORE SPEED  VELOCITY%f\" % (velocity)) }\n    {% elif velocity == velocity_set and accel != accel_set %}\n        SET_VELOCITY_LIMIT ACCEL={accel}\n        { action_respond_info(\"RESTORE SPEED ACCEL%f\" % (accel)) }\n    {% endif %}\n\n\n\n",
+  "version": "2.9.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 5,
+  "new": "        {% set sv = printer.save_variables.variables %}\n        {% set trim = sv[\"wm_z_trim_t%d\" % tool]|default(0)|float %}\n        {% set ename = \"extruder\" if tool == 0 else \"extruder%d\" % tool %}",
+  "old": "        {% set sv = printer.save_variables.variables %}\n        {% set trim = sv.wm_z_trim_all|default(0)|float + sv[\"wm_z_trim_t%d\" % tool]|default(0)|float %}\n        {% set ename = \"extruder\" if tool == 0 else \"extruder%d\" % tool %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 6,
+  "new": "        {% set heat = growth * (target - ref) if (growth > 0 and target > ref) else 0 %}\n        # live Z adjust of this tool (Z+ / Z- during the print, rpi_zoffset.cfg): the tool gets its own number back at every tool change\n        {% set lz = printer[\"gcode_macro _WM_LIVEZ\"][\"l%d\" % tool]|float if \"gcode_macro _WM_LIVEZ\" in printer else 0 %}\n        SET_GCODE_OFFSET X={offset_x} Y={offset_y} Z={(offset_z + trim + heat + lz)|round(5)} move=1\n        {% if \"gcode_macro _WM_LIVEZ\" in printer %}\n            SET_GCODE_VARIABLE MACRO=_WM_LIVEZ VARIABLE=show VALUE={lz}\n            SET_GCODE_VARIABLE MACRO=_WM_LIVEZ VARIABLE=heat_t VALUE={target}\n        {% endif %}\n    {% endif %}",
+  "old": "        {% set heat = growth * (target - ref) if (growth > 0 and target > ref) else 0 %}\n        SET_GCODE_OFFSET X={offset_x} Y={offset_y} Z={(offset_z + trim + heat)|round(5)} move=1\n    {% endif %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 7,
+  "new": "",
+  "old": "\n[gcode_macro _OFFSET_RESET]\ngcode:\n    {% if \"xy\" not in printer.toolhead.homed_axes or retry == 1 %}\n        G28 X Y\n    {% endif %}\n    SET_GCODE_OFFSET X=0 Y=0 Z=0 move=1\n    { action_respond_info(\"OFFSET_RESET\") }",
+  "version": "2.9.0"
+ },
+ {
+  "file": "offset_calibrate.cfg",
+  "n": 1,
+  "new": "    { action_respond_info(\"T3 POSITON X:%f Y:%f\" % (position_x, position_y)) }\n\n\n[gcode_macro _APPLY_PRE_Z_OFFSET]",
+  "old": "    { action_respond_info(\"T3 POSITON X:%f Y:%f\" % (position_x, position_y)) }\n\n[gcode_macro _CALIBRATE_MOVE_OVER_PROBE]\ngcode:\n    BED_MESH_CLEAR\n    G0 Z10 F9600 # UPDATE THIS WITH YOUR POSITION\n    # G0 X147.85 Y229.31 F10000  # UPDATE THIS WITH YOUR POSITION\n    # G0 X299  F10000  # UPDATE THIS WITH YOUR POSITION\n    # G0 Y290  F10000  # UPDATE THIS WITH YOUR POSITION\n    # # probe samples=2\n    # G0 Z6.5 F2000 # UPDATE THIS WITH YOUR POSITION\n    \n\n[gcode_macro _APPLY_PRE_Z_OFFSET]",
+  "version": "2.9.0"
+ },
+ {
+  "file": "extruder0.cfg",
+  "n": 1,
+  "new": "    {% set printer_state = printer.print_stats.state %}\n    {% if \"gcode_macro _WM_HEAD_MARK\" in printer %}\n        _WM_HEAD_MARK T=0             # tells the head sensor watcher that Klipper started this load (rpi_head_sensors.cfg)\n    {% endif %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "old": "    {% set printer_state = printer.print_stats.state %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "extruder1.cfg",
+  "n": 1,
+  "new": "    {% set printer_state = printer.print_stats.state %}\n    {% if \"gcode_macro _WM_HEAD_MARK\" in printer %}\n        _WM_HEAD_MARK T=1             # tells the head sensor watcher that Klipper started this load (rpi_head_sensors.cfg)\n    {% endif %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "old": "    {% set printer_state = printer.print_stats.state %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "extruder2.cfg",
+  "n": 1,
+  "new": "    {% set printer_state = printer.print_stats.state %}\n    {% if \"gcode_macro _WM_HEAD_MARK\" in printer %}\n        _WM_HEAD_MARK T=2             # tells the head sensor watcher that Klipper started this load (rpi_head_sensors.cfg)\n    {% endif %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "old": "    {% set printer_state = printer.print_stats.state %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "extruder3.cfg",
+  "n": 1,
+  "new": "    {% set printer_state = printer.print_stats.state %}\n    {% if \"gcode_macro _WM_HEAD_MARK\" in printer %}\n        _WM_HEAD_MARK T=3             # tells the head sensor watcher that Klipper started this load (rpi_head_sensors.cfg)\n    {% endif %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "old": "    {% set printer_state = printer.print_stats.state %}\n    {% set bed_leveling = printer[\"gcode_macro G29\"].bed_leveling|default(False) %}",
+  "version": "2.9.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    SET_VELOCITY_LIMIT ACCEL={printer.configfile.settings.printer.max_accel}\n    {% if \"gcode_macro _WM_BED_SOAK_MARK\" in printer %}\n        _WM_BED_SOAK_MARK              # bed temperature at the start, for the bed warp wait (rpi_bed_soak.cfg)\n    {% endif %}\n    SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET={BED}",
+  "old": "    SET_VELOCITY_LIMIT ACCEL={printer.configfile.settings.printer.max_accel}\n    SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET={BED}",
+  "version": "2.11.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    M190 S{BED}\n    {% if \"gcode_macro _WM_BED_SOAK\" in printer %}\n        _WM_BED_SOAK BED={BED}         # bed warp wait: the plate stops bending before the wipe and the mesh (switch Bed_Warp_Stabilisation)\n    {% endif %}\n    WIPE_NOZZLE                    # T0 is the Z reference of the whole print, wipe it once more right before the mesh",
+  "old": "    M190 S{BED}\n    WIPE_NOZZLE                    # T0 is the Z reference of the whole print, wipe it once more right before the mesh",
+  "version": "2.11.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 3,
+  "new": "            M118 START_PRINT adaptive_mesh\n        {% elif params.ADAPTIVE is defined and params.ADAPTIVE|int == 1 %} #use klipper adaptive_mesh\n            {% if params.ADAPTIVE_MARGIN is defined %}",
+  "old": "            M118 START_PRINT adaptive_mesh\n        {% elif params.ADAPTIVE is defined and params.ADAPTIVE == 1 %} #use klipper adaptive_mesh\n            {% if params.ADAPTIVE_MARGIN is defined %}",
+  "version": "2.11.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    SAVE_VARIABLE VARIABLE=box_modify_t2 VALUE=2\n    SAVE_VARIABLE VARIABLE=box_modify_t3 VALUE=3\n    # the saved copies too (RESUME reads them): after an endless spool swap they still pointed the tool at the spare head\n    {% for i in range(4) %}\n        SAVE_VARIABLE VARIABLE=box_modify_t{i}_backup VALUE={i}\n    {% endfor %}\n    \n",
+  "old": "    SAVE_VARIABLE VARIABLE=box_modify_t2 VALUE=2\n    SAVE_VARIABLE VARIABLE=box_modify_t3 VALUE=3\n    \n",
+  "version": "2.12.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    M400\n    E_axis_move L=20 S=300    # purge before the print continues (factory 10 mm)\n    M400",
+  "old": "    M400\n    E_axis_move L=10 S=300\n    M400",
+  "version": "2.12.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 3,
+  "new": "    SAVE_VARIABLE VARIABLE=box_modify_t3 VALUE=3\n    # the saved copies too (RESUME reads them): after an endless spool swap they still pointed the tool at the spare head\n    {% for i in range(4) %}\n        SAVE_VARIABLE VARIABLE=box_modify_t{i}_backup VALUE={i}\n    {% endfor %}\n    SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=print_body_ready VALUE=False",
+  "old": "    SAVE_VARIABLE VARIABLE=box_modify_t3 VALUE=3\n    SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=print_body_ready VALUE=False",
+  "version": "2.12.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    {% if s > 0 %}\n        {% if \"gcode_macro _WM_HEAT_AT_WIPE\" in printer %}\n            _WM_HEAT_AT_WIPE T={t} S={s}       # in a print: the nozzle on the carriage heats at the wipe position (rpi_base.cfg)\n        {% endif %}\n        TEMPERATURE_WAIT SENSOR={heater} MINIMUM={s-2.5} MAXIMUM={s+2.5}",
+  "old": "    {% if s > 0 %}\n        TEMPERATURE_WAIT SENSOR={heater} MINIMUM={s-2.5} MAXIMUM={s+2.5}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "        TEMPERATURE_WAIT SENSOR={heater} MINIMUM={s-2.5} MAXIMUM={s+2.5}\n        {% if \"gcode_macro _WM_HEAT_BACK\" in printer %}\n            _WM_HEAT_BACK\n        {% endif %}\n    {% endif %}",
+  "old": "        TEMPERATURE_WAIT SENSOR={heater} MINIMUM={s-2.5} MAXIMUM={s+2.5}\n    {% endif %}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 1,
+  "new": "        {% if temp > 0 %}\n            {% if \"gcode_macro _WM_HEAT_AT_WIPE\" in printer %}\n                _WM_HEAT_AT_WIPE T={0 if extruder == \"extruder\" else extruder|replace(\"extruder\", \"\")|int} S={temp}\n            {% endif %}\n            TEMPERATURE_WAIT SENSOR={extruder} MINIMUM={temp-2.5} MAXIMUM={temp+2.5}",
+  "old": "        {% if temp > 0 %}\n            TEMPERATURE_WAIT SENSOR={extruder} MINIMUM={temp-2.5} MAXIMUM={temp+2.5}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 2,
+  "new": "            TEMPERATURE_WAIT SENSOR={extruder} MINIMUM={temp-2.5} MAXIMUM={temp+2.5}\n            {% if \"gcode_macro _WM_HEAT_BACK\" in printer %}\n                _WM_HEAT_BACK\n            {% endif %}\n        {% endif %}",
+  "old": "            TEMPERATURE_WAIT SENSOR={extruder} MINIMUM={temp-2.5} MAXIMUM={temp+2.5}\n        {% endif %}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "hub.cfg",
+  "n": 1,
+  "new": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament tangle on T0 (tool 1): the filament is pulled tight. The print is paused. Free the filament, then resume.\"\n    {% endif %}\n    {% if \"gcode_macro _WM_ENDLESS_TANGLE\" in printer %}\n        _WM_ENDLESS_TANGLE T=0\n    {% endif %}",
+  "old": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament runout on path 0 (tool 1). The print is paused.\"\n    {% endif %}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "hub.cfg",
+  "n": 2,
+  "new": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament tangle on T1 (tool 2): the filament is pulled tight. The print is paused. Free the filament, then resume.\"\n    {% endif %}\n    {% if \"gcode_macro _WM_ENDLESS_TANGLE\" in printer %}\n        _WM_ENDLESS_TANGLE T=1\n    {% endif %}",
+  "old": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament runout on path 1 (tool 2). The print is paused.\"\n    {% endif %}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "hub.cfg",
+  "n": 3,
+  "new": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament tangle on T2 (tool 3): the filament is pulled tight. The print is paused. Free the filament, then resume.\"\n    {% endif %}\n    {% if \"gcode_macro _WM_ENDLESS_TANGLE\" in printer %}\n        _WM_ENDLESS_TANGLE T=2\n    {% endif %}",
+  "old": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament runout on path 2 (tool 3). The print is paused.\"\n    {% endif %}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "hub.cfg",
+  "n": 4,
+  "new": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament tangle on T3 (tool 4): the filament is pulled tight. The print is paused. Free the filament, then resume.\"\n    {% endif %}\n    {% if \"gcode_macro _WM_ENDLESS_TANGLE\" in printer %}\n        _WM_ENDLESS_TANGLE T=3\n    {% endif %}",
+  "old": "    {% if printer.print_stats.state in [\"printing\", \"paused\"] %}\n        RESPOND TYPE=error MSG=\"Filament runout on path 3 (tool 4). The print is paused.\"\n    {% endif %}",
+  "version": "2.13.0"
+ },
+ {
+  "file": "offset_calibrate.cfg",
+  "n": 1,
+  "new": "sample_retract_dist: 0.75\nsamples_tolerance: 0.1\nsamples_tolerance_retries: 6\nsamples: 3",
+  "old": "sample_retract_dist: 0.75\nsamples_tolerance: 0.5\nsamples_tolerance_retries: 3\nsamples: 3",
+  "version": "2.14.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    SAVE_VARIABLE VARIABLE=box_modify_t0  value={t}\n    {% if \"gcode_macro _WM_START_PURGE\" in printer %}\n        # print start purge (item 32, F-105, rpi_base.cfg): 20 mm + wipe at the wipe area for every used toolhead (the first tool last), then the KAMP line in front of the parts\n        _WM_START_PURGE INITIAL_TOOL={INITIAL_TOOL} EXTRUDER={EXTRUDER}\n    {% else %}\n        # without the F-105 macros: the factory left-edge purge\n        T{INITIAL_TOOL}\n        SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0 MOVE=1\n        G90\n        # SET_GCODE_OFFSET Z=0.145 MOVE=0\n        G1 Z7.0 F3000                    # Move Z Axis up\n        G1 X0.0 Y70.0 F10000.0       # Move to the left-edge purge start\n        M109 S{EXTRUDER} T{INITIAL_TOOL}\n        G1 Y100.0 F5000.0\n        G1 Z0.4 F5000.0\n        G1 Y150.0 E20 F1000.0          # purge 20 mm along the left edge\n        G91\n        G1 Z5 X5 F600\n        G90\n    {% endif %}\n",
+  "old": "    SAVE_VARIABLE VARIABLE=box_modify_t0  value={t}\n    T{INITIAL_TOOL}\n    SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0 MOVE=1\n    G90\n    # SET_GCODE_OFFSET Z=0.145 MOVE=0\n    G1 Z7.0 F3000                    # Move Z Axis up\n    G1 X0.0 Y70.0 F10000.0       # Move to the left-edge purge start\n    M109 S{EXTRUDER} T{INITIAL_TOOL}\n    G1 Y100.0 F5000.0\n    G1 Z0.4 F5000.0     \n    G1 Y150.0 E20 F1000.0          # purge 20 mm along the left edge\n    G91\n    G1 Z5 X5 F600\n    G90 \n",
+  "version": "2.16.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    WIPE_NOZZLE \n    M118 {(printer.configfile.settings.bed_mesh.probe_count[0] * printer.configfile.settings.bed_mesh.probe_count[1])|int}-point calibration is in progress\n    BED_MESH_CALIBRATE",
+  "old": "    WIPE_NOZZLE \n    M118 49-point calibration is in progress\n    BED_MESH_CALIBRATE",
+  "version": "2.16.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    {% endif %}\n\n    # F-150: the tool on the carriage heats at the wipe position, not at the pause park spot\n    {% if \"gcode_macro _WM_GO_WIPE\" in printer %}\n        _WM_GO_WIPE\n    {% endif %}\n    {% if thr_number == 1 %}\n        M104 S{resume_temperature0} T0",
+  "old": "    {% endif %}\n\n    {% if thr_number == 1 %}\n        M104 S{resume_temperature0} T0",
+  "version": "2.17.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    {% endif %}\n    # F-150: the nozzle heats and is wiped at the wipe position (before: it heated at the bed centre)\n    {% if \"gcode_macro _WM_GO_WIPE\" in printer %}\n        _WM_GO_WIPE\n    {% else %}\n        G1 X150 Y135 F3000\n    {% endif %}\n    M104 S140            # set the nozzle target temperature to 140 degrees (no wait)",
+  "old": "    {% endif %}\n    G1 X150 Y135 F3000\n    M104 S140            # set the nozzle target temperature to 140 degrees (no wait)",
+  "version": "2.17.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 3,
+  "new": "    RESPOND MSG=\"Loading filament on T{params.T|default(0)|int}\"\n    {% set T = params.T|default(0)|int %}\n    {% set en = \"extruder\" if T == 0 else \"extruder%d\" % T %}\n    # F-150: the head is picked up if it is not on the carriage, heats at the wipe position, is wiped after the move and parked\n    {% set at_wipe = \"gcode_macro _WM_GO_WIPE_HEAT\" in printer %}\n    {% if at_wipe %}\n        {% if \"xyz\" not in printer.toolhead.homed_axes %}\n            G28\n        {% endif %}\n        {% if printer.save_variables.variables.current_extruder|default(99)|int != T %}\n            _CHANGE_TOOL T={T}\n        {% endif %}\n    {% endif %}\n    ACTIVATE_EXTRUDER EXTRUDER={en}\n    {% if at_wipe %}\n        _WM_GO_WIPE_HEAT T={T} S=220\n    {% else %}\n        M109 S220 T{T}\n    {% endif %}\n    M83\n    G92 E0\n    G91",
+  "old": "    RESPOND MSG=\"Loading filament on T{params.T|default(0)|int}\"\n    {% set T  = params.T|default(0)|int %}\n    {% if T == 0 %}\n        ACTIVATE_EXTRUDER EXTRUDER=extruder\n    {% else %}\n        ACTIVATE_EXTRUDER EXTRUDER=extruder{T}\n    {% endif %}\n    M109 S220 T{T}\n    M83\n    G92 E0 \n    G91",
+  "version": "2.17.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 4,
+  "new": "    M400\n    {% if at_wipe %}\n        WIPE_NOZZLE\n    {% endif %}\n    M104 S0 T{T}\n    SET_STEPPER_ENABLE STEPPER={en} ENABLE=0\n    {% if at_wipe %}\n        PARK_CURRENT_TOOL\n    {% endif %}\n",
+  "old": "    M400\n    M104 S0 T{T}\n    SET_STEPPER_ENABLE STEPPER={printer.toolhead.extruder} ENABLE=0 \n",
+  "version": "2.17.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 5,
+  "new": "    {% set T = params.T|default(0)|int %}\n    {% set en = \"extruder\" if T == 0 else \"extruder%d\" % T %}\n    # F-150: the head is picked up if it is not on the carriage, heats at the wipe position, is wiped after the move and parked\n    {% set at_wipe = \"gcode_macro _WM_GO_WIPE_HEAT\" in printer %}\n    {% if at_wipe %}\n        {% if \"xyz\" not in printer.toolhead.homed_axes %}\n            G28\n        {% endif %}\n        {% if printer.save_variables.variables.current_extruder|default(99)|int != T %}\n            _CHANGE_TOOL T={T}\n        {% endif %}\n    {% endif %}\n    ACTIVATE_EXTRUDER EXTRUDER={en}\n    {% if at_wipe %}\n        _WM_GO_WIPE_HEAT T={T} S=220\n    {% else %}\n        M109 S220 T{T}\n    {% endif %}\n    M83\n    G92 E0\n    G91",
+  "old": "    {% set T = params.T|default(0)|int %}\n    {% if T == 0 %}\n        ACTIVATE_EXTRUDER EXTRUDER=extruder\n    {% else %}\n        ACTIVATE_EXTRUDER EXTRUDER=extruder{T}\n    {% endif %}\n    M109 S220 T{T}\n    M83\n    G92 E0 \n    G91",
+  "version": "2.17.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 6,
+  "new": "    M400\n    {% if at_wipe %}\n        WIPE_NOZZLE\n    {% endif %}\n    M104 S0 T{T}\n    SET_STEPPER_ENABLE STEPPER={en} ENABLE=0\n    {% if at_wipe %}\n        PARK_CURRENT_TOOL\n    {% endif %}\n",
+  "old": "    M400\n    M104 S0 T{T}\n    SET_STEPPER_ENABLE STEPPER={printer.toolhead.extruder} ENABLE=0\n",
+  "version": "2.17.0"
+ },
+ {
+  "file": "offset_calibrate.cfg",
+  "n": 1,
+  "new": "sample_retract_dist: 0.75\nsamples_tolerance: 0.05   # was 0.5, then 0.1: touches that are further apart are redone (false touches of the load cell, B-049). 0.05 since CELL firmware V2 (F-117)\nsamples_tolerance_retries: 6   # was 3\nsamples: 3",
+  "old": "sample_retract_dist: 0.75\nsamples_tolerance: 0.1\nsamples_tolerance_retries: 6\nsamples: 3",
+  "version": "2.17.0"
+ },
+ {
+  "file": "offset_calibrate.cfg",
+  "n": 2,
+  "new": "    G90                     ; absolute coordinate mode  \n    G92 E0\n    # F-150: heat at the wipe position (it drips there, not on the bed), then back to the purge spot\n    {% if \"gcode_macro _WM_GO_WIPE\" in printer %}\n        SAVE_GCODE_STATE NAME=_wm_prep\n        _WM_GO_WIPE\n        M109 S220 T{T}\n        RESTORE_GCODE_STATE NAME=_wm_prep MOVE=1 MOVE_SPEED=100\n    {% else %}\n        M109 S220 T{T}\n    {% endif %}\n    {% if ace %}",
+  "old": "    G90                     ; absolute coordinate mode  \n    G92 E0 \n    M109 S220 T{T}          ; heat to 220\u00b0C\n    {% if ace %}",
+  "version": "2.17.0"
+ },
+ {
+  "file": "offset_calibrate.cfg",
+  "n": 3,
+  "new": "        T{tool}\n        # F-150: heat at the wipe position, then back to where the tool change left the head\n        {% if \"gcode_macro _WM_GO_WIPE\" in printer %}\n            SAVE_GCODE_STATE NAME=_wm_pop\n            _WM_GO_WIPE\n            M109 S222 T{tool}\n            RESTORE_GCODE_STATE NAME=_wm_pop MOVE=1 MOVE_SPEED=100\n        {% else %}\n            M109 S222 T{tool}\n        {% endif %}\n        G1 Y2 Z2",
+  "old": "        T{tool}\n        M109 S222 T{tool}\n        G1 Y2 Z2",
+  "version": "2.17.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    M118 START_PRINT begin\n    G90                            # G90: a jog error can leave G91 on (F-181), every print start begins in absolute mode\n    {% if \"gcode_macro _WM_LIVEZ_RESET\" in printer %}",
+  "old": "    M118 START_PRINT begin\n    {% if \"gcode_macro _WM_LIVEZ_RESET\" in printer %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    SAVE_VARIABLE VARIABLE=box_modify_t0  value={t}\n    # print start purge (item 32, F-105, rpi_base.cfg): 20 mm + wipe at the wipe area for every used toolhead (the first tool last), then the KAMP line in front of the parts\n    # F-186: the old factory left-edge purge fallback is removed, one purge only\n    _WM_START_PURGE INITIAL_TOOL={INITIAL_TOOL} EXTRUDER={EXTRUDER}\n",
+  "old": "    SAVE_VARIABLE VARIABLE=box_modify_t0  value={t}\n    {% if \"gcode_macro _WM_START_PURGE\" in printer %}\n        # print start purge (item 32, F-105, rpi_base.cfg): 20 mm + wipe at the wipe area for every used toolhead (the first tool last), then the KAMP line in front of the parts\n        _WM_START_PURGE INITIAL_TOOL={INITIAL_TOOL} EXTRUDER={EXTRUDER}\n    {% else %}\n        # without the F-105 macros: the factory left-edge purge\n        T{INITIAL_TOOL}\n        SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0 MOVE=1\n        G90\n        # SET_GCODE_OFFSET Z=0.145 MOVE=0\n        G1 Z7.0 F3000                    # Move Z Axis up\n        G1 X0.0 Y70.0 F10000.0       # Move to the left-edge purge start\n        M109 S{EXTRUDER} T{INITIAL_TOOL}\n        G1 Y100.0 F5000.0\n        G1 Z0.4 F5000.0\n        G1 Y150.0 E20 F1000.0          # purge 20 mm along the left edge\n        G91\n        G1 Z5 X5 F600\n        G90\n    {% endif %}\n",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 3,
+  "new": "    RESPOND MSG=\"Print paused. Parking the tool head.\"\n    # F-166: remember the print's tool (the one on the carriage now); RESUME puts it back if a load or unload while paused moved it\n    SAVE_VARIABLE VARIABLE=wm_pause_tool VALUE={printer.save_variables.variables.current_extruder|default(99)|int}\n    SET_IDLE_TIMEOUT TIMEOUT={printer.configfile.settings.idle_timeout.timeout}",
+  "old": "    RESPOND MSG=\"Print paused. Parking the tool head.\"\n    SET_IDLE_TIMEOUT TIMEOUT={printer.configfile.settings.idle_timeout.timeout}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 4,
+  "new": "    RESPOND MSG=\"Resuming the print. Heating the bed and nozzles first.\"\n    # F-166: the print's tool (saved by PAUSE) must be on the carriage with filament in its head sensor before anything heats or moves\n    {% set pt = printer.save_variables.variables.wm_pause_tool|default(99)|int %}\n    {% set pcur = printer.save_variables.variables.current_extruder|default(99)|int %}\n    {% if pt >= 0 and pt <= 3 %}\n        {% set psk = \"filament_switch_sensor filament%d\" % pt %}\n        {% if psk in printer and not printer[psk].filament_detected %}\n            {action_raise_error(\"RESUME: T%d has no filament in its head. Load it first (unload/load while paused), then RESUME again\" % pt)}\n        {% elif pcur != pt %}\n            RESPOND MSG=\"RESUME: T{pt} is not on the carriage, picking it up\"\n            _CHANGE_TOOL T={pt}\n        {% endif %}\n    {% endif %}\n    {% set thr_number = printer.save_variables.variables.thr_number|int %}",
+  "old": "    RESPOND MSG=\"Resuming the print. Heating the bed and nozzles first.\"\n    {% set thr_number = printer.save_variables.variables.thr_number|int %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 5,
+  "new": "\n    # F-164: the tool on the carriage heats at the purge location (cold move first), not at the pause park spot\n    {% if \"gcode_macro _WM_PURGE_LOCATION\" in printer %}\n        _WM_PURGE_LOCATION\n    {% elif \"gcode_macro _WM_GO_WIPE\" in printer %}\n        _WM_GO_WIPE",
+  "old": "\n    # F-150: the tool on the carriage heats at the wipe position, not at the pause park spot\n    {% if \"gcode_macro _WM_GO_WIPE\" in printer %}\n        _WM_GO_WIPE",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 6,
+  "new": "    {% set pr_t = printer.save_variables.variables.current_extruder|int %}\n    {% set pr_ace = pr_t < 4 and \"gcode_macro _WM_ACE\" in printer and printer[\"gcode_macro _WM_ACE\"].mode == \"idle\" and (\"ace_instance_\" ~ printer[\"gcode_macro _WM_ACE\"].ace_instance) in printer %}\n    {% if pr_ace %}\n        _ACE_WM_ASSIST T={pr_t} STATE=on\n    {% endif %}\n    # F-164/F-187: the purge is at the purge location (X-13 Y80), the wiper (WIPE_NOZZLE) comes after it; no own-position fallback\n    _WM_PURGE_LOCATION\n    M400\n    # F-166: purge length = 20 mm, or the length chosen in WM_RESUME_TOOL\n    {% set pl = printer[\"gcode_macro _WM_RTOOL\"].purge|default(20)|int if \"gcode_macro _WM_RTOOL\" in printer else 20 %}\n    E_axis_move L={pl} S=300    # purge before the print continues (factory 10 mm)\n    M400",
+  "old": "    {% set pr_t = printer.save_variables.variables.current_extruder|int %}\n    {% set pr_pos = printer.save_variables.variables.wipe_position|default([-13.0, 240.0]) %}\n    {% set pr_ace = pr_t < 4 and \"gcode_macro _WM_ACE\" in printer and printer[\"gcode_macro _WM_ACE\"].mode == \"idle\" and (\"ace_instance_\" ~ printer[\"gcode_macro _WM_ACE\"].ace_instance) in printer %}\n    {% if pr_ace %}\n        ACE_WM_ASSIST T={pr_t} STATE=on\n    {% endif %}\n    G90\n    G0 Y{pr_pos[1]} F12000\n    G0 X{pr_pos[0]} F12000\n    M400\n    E_axis_move L=20 S=300    # purge before the print continues (factory 10 mm)\n    M400",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 7,
+  "new": "    {% set heater = 'extruder' if t == 0 else 'extruder' ~ t %}\n    # F-164: in a print the cold nozzle first goes to the purge location, and only then is the heater set (no drip on the part on the way)\n    {% if s > 0 and \"gcode_macro _WM_HEAT_AT_WIPE\" in printer %}\n        _WM_HEAT_AT_WIPE T={t} S={s}       # in a print: the nozzle on the carriage heats at the purge location (rpi_base.cfg)\n    {% endif %}\n    SET_HEATER_TEMPERATURE HEATER={heater} TARGET={s}",
+  "old": "    {% set heater = 'extruder' if t == 0 else 'extruder' ~ t %}\n    SET_HEATER_TEMPERATURE HEATER={heater} TARGET={s}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 8,
+  "new": "    {% if s > 0 %}\n        TEMPERATURE_WAIT SENSOR={heater} MINIMUM={s-2.5} MAXIMUM={s+2.5}",
+  "old": "    {% if s > 0 %}\n        {% if \"gcode_macro _WM_HEAT_AT_WIPE\" in printer %}\n            _WM_HEAT_AT_WIPE T={t} S={s}       # in a print: the nozzle on the carriage heats at the wipe position (rpi_base.cfg)\n        {% endif %}\n        TEMPERATURE_WAIT SENSOR={heater} MINIMUM={s-2.5} MAXIMUM={s+2.5}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 9,
+  "new": "# The fans and the nozzle are switched off again at the end (START_PRINT sets its own temperatures afterwards).\nvariable_max_chamber: 65             # C, the same limit as _ZR_CHAMBER\nvariable_part_fan_speed: 0.5         # 0.0 - 1.0 while waiting, 0 = off  ([fan], M106 S)",
+  "old": "# The fans and the nozzle are switched off again at the end (START_PRINT sets its own temperatures afterwards).\nvariable_max_chamber: 65             # C, the same limit as ZR_CHAMBER\nvariable_part_fan_speed: 0.5         # 0.0 - 1.0 while waiting, 0 = off  ([fan], M106 S)",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 10,
+  "new": "    G90\n    # F-164/F-187: the purge is at the purge location; no own-position fallback\n    _WM_PURGE_LOCATION\n    M83",
+  "old": "    G90\n    G1 X-13 Y80 F6000  ; move to a safe position  ; move to a safe position\n    M83",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 11,
+  "new": "    G90\n    # F-187: the retract is at the purge location too (before: X-13 Y232)\n    _WM_PURGE_LOCATION\n    M83",
+  "old": "    G90\n    G1 X-13 Y232 F6000\n    M83",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 12,
+  "new": "    M109 S220 T{T}\n    # F-164/F-187: the purge is at the purge location (before: X-13 Y80); no own-position fallback\n    _WM_PURGE_LOCATION\n    M83",
+  "old": "    M109 S220 T{T}\n    G1 X-13 Y80 F6000\n    M83",
+  "version": "2.22.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 1,
+  "new": "    {% set cur = printer.save_variables.variables.current_extruder|int %}\n    RESPOND MSG=\"Changing tool: {'T' ~ (cur + 1) if cur < 4 else 'no tool'} to T{params.T|default(0)|int + 1}\"\n    # reset the check values",
+  "old": "    {% set cur = printer.save_variables.variables.current_extruder|int %}\n    RESPOND MSG=\"Changing tool: {'T' ~ cur if cur < 4 else 'no tool'} to T{params.T|default(0)|int}\"\n    # reset the check values",
+  "version": "2.22.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 2,
+  "new": "                    \n            M118 start change tool T{target_tool|int + 1}\n            SAVE_VARIABLE VARIABLE=changing_tool VALUE=1",
+  "old": "                    \n            M118 start change tool T{target_tool}\n            SAVE_VARIABLE VARIABLE=changing_tool VALUE=1",
+  "version": "2.22.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 3,
+  "new": "\n            M118 finish change tool T{target_tool|int + 1}\n        {% endif %}",
+  "old": "\n            M118 finish change tool T{target_tool}\n        {% endif %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "change_macros.cfg",
+  "n": 4,
+  "new": "    {% set pc = printer.save_variables.variables.current_extruder|int %}\n    RESPOND MSG=\"Parking {'T' ~ (pc + 1) if pc < 4 else 'the tool'} in its dock\"\n    SAVE_VARIABLE VARIABLE=fail_flag VALUE=0",
+  "old": "    {% set pc = printer.save_variables.variables.current_extruder|int %}\n    RESPOND MSG=\"Parking {'T' ~ pc if pc < 4 else 'the tool'} in its dock\"\n    SAVE_VARIABLE VARIABLE=fail_flag VALUE=0",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder0.cfg",
+  "n": 1,
+  "new": "insert_gcode:\n    _WM_ACE_HEAD T=0\n    {% set printer_state = printer.print_stats.state %}",
+  "old": "insert_gcode:\n    {% set printer_state = printer.print_stats.state %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder0.cfg",
+  "n": 2,
+  "new": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        _WM_ACE_GRAB T=0\n        filament_insert",
+  "old": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        filament_insert",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder0.cfg",
+  "n": 3,
+  "new": "        M104 S0 T0\n        # F-166: while a print is paused the print's tool stays on the carriage after its load (RESUME continues with it); any other tool is parked\n        {% if printer.print_stats.state == \"paused\" and printer.save_variables.variables.wm_pause_tool|default(99)|int == 0 %}\n            RESPOND MSG=\"T0 loaded: it is the print's tool, it stays on the carriage until RESUME\"\n        {% else %}\n            PARK_CURRENT_TOOL\n        {% endif %}\n        _WM_ACE_HEAD_DONE T=0\n    {% endif %}",
+  "old": "        M104 S0 T0\n        PARK_CURRENT_TOOL\n    {% endif %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder1.cfg",
+  "n": 1,
+  "new": "insert_gcode:\n    _WM_ACE_HEAD T=1\n    {% set printer_state = printer.print_stats.state %}",
+  "old": "insert_gcode:\n    {% set printer_state = printer.print_stats.state %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder1.cfg",
+  "n": 2,
+  "new": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        _WM_ACE_GRAB T=1\n        filament_insert",
+  "old": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        filament_insert",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder1.cfg",
+  "n": 3,
+  "new": "        M104 S0 T1\n        # F-166: while a print is paused the print's tool stays on the carriage after its load (RESUME continues with it); any other tool is parked\n        {% if printer.print_stats.state == \"paused\" and printer.save_variables.variables.wm_pause_tool|default(99)|int == 1 %}\n            RESPOND MSG=\"T1 loaded: it is the print's tool, it stays on the carriage until RESUME\"\n        {% else %}\n            PARK_CURRENT_TOOL\n        {% endif %}\n        _WM_ACE_HEAD_DONE T=1\n    {% endif %}",
+  "old": "        M104 S0 T1\n        PARK_CURRENT_TOOL\n    {% endif %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder2.cfg",
+  "n": 1,
+  "new": "insert_gcode:\n    _WM_ACE_HEAD T=2\n    {% set printer_state = printer.print_stats.state %}",
+  "old": "insert_gcode:\n    {% set printer_state = printer.print_stats.state %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder2.cfg",
+  "n": 2,
+  "new": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        _WM_ACE_GRAB T=2\n        filament_insert",
+  "old": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        filament_insert",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder2.cfg",
+  "n": 3,
+  "new": "        M104 S0 T2\n        # F-166: while a print is paused the print's tool stays on the carriage after its load (RESUME continues with it); any other tool is parked\n        {% if printer.print_stats.state == \"paused\" and printer.save_variables.variables.wm_pause_tool|default(99)|int == 2 %}\n            RESPOND MSG=\"T2 loaded: it is the print's tool, it stays on the carriage until RESUME\"\n        {% else %}\n            PARK_CURRENT_TOOL\n        {% endif %}\n        _WM_ACE_HEAD_DONE T=2\n    {% endif %}",
+  "old": "        M104 S0 T2\n        PARK_CURRENT_TOOL\n    {% endif %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder3.cfg",
+  "n": 1,
+  "new": "insert_gcode:\n    _WM_ACE_HEAD T=3\n    {% set printer_state = printer.print_stats.state %}",
+  "old": "insert_gcode:\n    {% set printer_state = printer.print_stats.state %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder3.cfg",
+  "n": 2,
+  "new": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        _WM_ACE_GRAB T=3\n        filament_insert",
+  "old": "        SAVE_VARIABLE VARIABLE=if_check_extruder_status value=0\n        filament_insert",
+  "version": "2.22.0"
+ },
+ {
+  "file": "extruder3.cfg",
+  "n": 3,
+  "new": "        M104 S0 T3\n        # F-166: while a print is paused the print's tool stays on the carriage after its load (RESUME continues with it); any other tool is parked\n        {% if printer.print_stats.state == \"paused\" and printer.save_variables.variables.wm_pause_tool|default(99)|int == 3 %}\n            RESPOND MSG=\"T3 loaded: it is the print's tool, it stays on the carriage until RESUME\"\n        {% else %}\n            PARK_CURRENT_TOOL\n        {% endif %}\n        _WM_ACE_HEAD_DONE T=3\n    {% endif %}",
+  "old": "        M104 S0 T3\n        PARK_CURRENT_TOOL\n    {% endif %}",
+  "version": "2.22.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    {% endif %}\n\n[gcode_macro _WM_LOG_STATE]\ndescription: Support log: writes one line (tool, G-code position, head position, offsets, heaters, state) that the log digest copies into wm-events.log. Called by PAUSE, RESUME and CANCEL_PRINT\ngcode:\n    {% set what = params.WHAT|default(\"STATE\") %}\n    {% set cur = printer.save_variables.variables.current_extruder|default(99)|int %}\n    {% set gm = printer.gcode_move %}\n    {% set th = printer.toolhead %}\n    {% set en = \"extruder\" if cur == 0 else \"extruder%d\" % cur %}\n    {% set nt = printer[en].temperature|round(0)|int if en in printer else 0 %}\n    {% set ng = printer[en].target|round(0)|int if en in printer else 0 %}\n    {% set bt = printer.heater_bed.temperature|round(0)|int if \"heater_bed\" in printer else 0 %}\n    {% set bg = printer.heater_bed.target|round(0)|int if \"heater_bed\" in printer else 0 %}\n    {% set hd = th.homed_axes if th.homed_axes else \"none\" %}\n    RESPOND MSG=\"WMLOG {what} T{cur} gcode X{\"%.2f\"|format(gm.gcode_position.x)} Y{\"%.2f\"|format(gm.gcode_position.y)} Z{\"%.2f\"|format(gm.gcode_position.z)} head X{\"%.2f\"|format(th.position.x)} Y{\"%.2f\"|format(th.position.y)} Z{\"%.2f\"|format(th.position.z)} offset X{\"%.2f\"|format(gm.homing_origin.x)} Y{\"%.2f\"|format(gm.homing_origin.y)} Z{\"%.2f\"|format(gm.homing_origin.z)} homed {hd} nozzle {nt}/{ng} bed {bt}/{bg} speed {(gm.speed_factor * 100)|round(0)|int}% state {printer.print_stats.state}\"\n\n[gcode_macro PAUSE]\nrename_existing: BASE_PAUSE",
+  "old": "    {% endif %}\n\n[gcode_macro PAUSE]\nrename_existing: BASE_PAUSE",
+  "version": "2.23.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 2,
+  "new": "    SAVE_GCODE_STATE NAME=PAUSE                                                                  \n    _WM_LOG_STATE WHAT=PAUSE_START\n    M25                                                                              ",
+  "old": "    SAVE_GCODE_STATE NAME=PAUSE                                                                  \n    M25                                                                              ",
+  "version": "2.23.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 3,
+  "new": "    SET_STEPPER_ENABLE STEPPER={printer.toolhead.extruder} ENABLE=0\n    _WM_LOG_STATE WHAT=PAUSE_PARKED\n    {% endif %}",
+  "old": "    SET_STEPPER_ENABLE STEPPER={printer.toolhead.extruder} ENABLE=0\n    {% endif %}",
+  "version": "2.23.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 4,
+  "new": "    RESPOND MSG=\"Resuming the print. Heating the bed and nozzles first.\"\n    _WM_LOG_STATE WHAT=RESUME_START\n    # F-166: the print's tool (saved by PAUSE) must be on the carriage with filament in its head sensor before anything heats or moves",
+  "old": "    RESPOND MSG=\"Resuming the print. Heating the bed and nozzles first.\"\n    # F-166: the print's tool (saved by PAUSE) must be on the carriage with filament in its head sensor before anything heats or moves",
+  "version": "2.23.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 5,
+  "new": "    {% endif %}\n    _WM_LOG_STATE WHAT=RESUME_DONE\n    M24",
+  "old": "    {% endif %}\n    M24",
+  "version": "2.23.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 6,
+  "new": "    RESPOND MSG=\"Print cancelled. Heaters and fans off.\"\n    _WM_LOG_STATE WHAT=CANCEL_START\n    {% set RUN_VELOCITY = printer.configfile.settings['printer'].max_velocity|float %}",
+  "old": "    RESPOND MSG=\"Print cancelled. Heaters and fans off.\"\n    {% set RUN_VELOCITY = printer.configfile.settings['printer'].max_velocity|float %}",
+  "version": "2.23.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 7,
+  "new": "    SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=print_body_ready VALUE=False\n    _WM_LOG_STATE WHAT=CANCEL_DONE\n    SDCARD_RESET_FILE",
+  "old": "    SET_GCODE_VARIABLE MACRO=START_PRINT VARIABLE=print_body_ready VALUE=False\n    SDCARD_RESET_FILE",
+  "version": "2.23.0"
+ },
+ {
+  "file": "macros.cfg",
+  "n": 1,
+  "new": "    {% endif %}\n    # B-081: two slicer tools can print with the same head (tool map after Resume tool or an endless spool swap). The slicer cools the\n    # tool it leaves (M104 S140 Tx) and that would cool the head the next tool change uses: it then waits for the cooldown and heats it\n    # again. While a print runs, a standby temperature (1-169 C, below the target) for a head that more than one slicer tool maps to is skipped.\n    {% set sv = printer.save_variables.variables %}\n    {% set hname = 'extruder' if t == 0 else 'extruder' ~ t %}\n    {% set ns = namespace(n=0) %}\n    {% for L in range(4) %}\n        {% if sv.get('box_modify_t' ~ L, L)|int == t %}\n            {% set ns.n = ns.n + 1 %}\n        {% endif %}\n    {% endfor %}\n    {% if 'T' in params and s > 0 and s < 170 and ns.n > 1 and hname in printer and printer[hname].target|float > s and printer.print_stats.state == \"printing\" %}\n        RESPOND MSG=\"Cooldown of slicer tool T{T + 1} skipped: head {t + 1} also prints another slicer tool\"\n    {% else %}\n        {% if t == 0 %}\n            SET_HEATER_TEMPERATURE HEATER=extruder TARGET={s}\n        {% else %}\n            SET_HEATER_TEMPERATURE HEATER=extruder{t} TARGET={s}\n        {% endif %}\n        {% if \"gcode_macro _WM_LIVEZ_HEAT\" in printer %}\n            _WM_LIVEZ_HEAT T={t} S={s}\n        {% endif %}\n    {% endif %}",
+  "old": "    {% endif %}\n    {% if t == 0 %}\n        SET_HEATER_TEMPERATURE HEATER=extruder TARGET={s}\n    {% else %}\n        SET_HEATER_TEMPERATURE HEATER=extruder{t} TARGET={s}\n    {% endif %}\n    {% if \"gcode_macro _WM_LIVEZ_HEAT\" in printer %}\n        _WM_LIVEZ_HEAT T={t} S={s}\n    {% endif %}",
+  "version": "2.23.1"
+ }
+]
