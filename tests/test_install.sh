@@ -36,11 +36,17 @@ S
            WM_SYSTEMCTL="$T/bin/systemctl" WM_CURL="$T/bin/curl" WM_GIT="$T/bin/git" WM_ALLOW_ROOT=1 \
            WM_FAKE_CAN0=1 WM_SYS_ZRAM="$T/nozram" WM_SYS_ZRAM0="$T/nozram0" WM_SUDO="" WM_SYS_ROOT="$T/sys" WM_SRC_DIR="$T/h/src" FAKE_PRINT=standby
 }
-run() { bash "$HERE/$1" "${@:2}" 2>&1; }
+run() {   # runs install.sh from a scratch copy of the repo whose installer.sh only records its arguments
+    rm -rf "$T/repo"; mkdir -p "$T/repo/factory"; cp -a "$HERE/install.sh" "$HERE/lib" "$HERE/usb_rescue" "$T/repo/"
+    for f in snapshot.sh restore.sh; do [ -f "$HERE/$f" ] && cp "$HERE/$f" "$T/repo/"; done
+    printf '#!/bin/bash\necho "$@" >>"$REC"\n' >"$T/repo/installer.sh"; chmod +x "$T/repo/installer.sh"
+    [ -n "${NOFACTORY:-}" ] && rmdir "$T/repo/factory"
+    bash "$T/repo/$1" "${@:2}" 2>&1
+}
 
 mkfake; out="$(run install.sh --check)"; rc=$?
 ck "check on the right board passes"          '[ $rc = 0 ] && grep -q "board: Rockchip RK3308B" <<<"$out"'
-ck "check changes nothing"                     '[ ! -d "$T/h/wm-factory-snapshot" ] && [ ! -d "$T/h/src" ]'
+ck "check changes nothing"                     '[ ! -d "$T/h/wm-factory-snapshot" ]'
 
 mkfake; printf 'Raspberry Pi 4 Model B\0' >"$T/model"; out="$(run install.sh --check)"; rc=$?
 ck "wrong board stops"                         '[ $rc != 0 ] && grep -q "only for the RK3308B" <<<"$out"'
@@ -61,7 +67,9 @@ ck "dry run: no screen on, no backup, no clone" '! grep -q -- "--screen on" <<<"
 mkfake; out="$(run install.sh --yes --webcam on --model ultra -- --acepro off)"; rc=$?
 ck "install passes"                            '[ $rc = 0 ]'
 ck "installer got the lean arguments"          'a="$(cat "$REC")"; for f in "--model ultra" "--screen off" "--network-manager off" "--obico off" "--octoapp off" "--octoeverywhere off" "--webcam on" "--yes" "--acepro off"; do grep -q -- "$f" <<<"$a" || exit 1; done'
-ck "pinned version is cloned"                  'grep -q "clone --depth 1 --branch v2.25.2" "$FAKE_LOG"'
+ck "install uses the installer of this repo, no clone" '! grep -q "^git clone" "$FAKE_LOG" && [ -s "$REC" ]'
+mkfake; NOFACTORY=1 out="$(run install.sh --yes)"; rc=$?
+ck "missing factory/ folder stops with a clear message" '[ $rc != 0 ] && grep -q "factory/ folder is missing" <<<"$out"'
 ck "snapshot saved before the install and checked"       '[ -f "$T/h/wm-factory-snapshot/home.tar.gz" ] && ( cd "$T/h/wm-factory-snapshot" && sha256sum -c --quiet SHA256SUMS )'
 ck "KlipperScreen is not touched by install"   '! grep -q "disable KlipperScreen\|stop KlipperScreen" "$FAKE_LOG"'
 

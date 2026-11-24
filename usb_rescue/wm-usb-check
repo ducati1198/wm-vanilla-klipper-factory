@@ -1,0 +1,67 @@
+#!/bin/bash
+# Boot check of USB sticks (runs from wm-factory-usb.service, as root).
+#   WM-FACTORY  empty file in the top folder of a stick: back to factory (restore.sh --factory --yes), then reboot
+#   WM-RESCUE   empty file: write a status report to the stick (nothing is changed)
+# The flag is renamed to .done BEFORE anything runs, so a failed restore can never loop.
+# The snapshot used: <stick>/wm-factory-snapshot if it passes its checksum, else the one on the board.
+# A report is written to <stick>/WM-FACTORY-LOG.txt.
+set -u
+CONF="${WM_USB_CONF:-/etc/default/wm-factory-usb}"; [ -f "$CONF" ] && . "$CONF"
+APP="${WM_RESCUE_APP:-/opt/wm-factory-rescue}"          # restore.sh + lib/ copy, outside the folders restore wipes
+export WM_HOME="${WM_HOME:-/home/${WM_USER:-t13dp}}"
+LOGF="${WM_USB_LOG:-/var/log/wm-factory-usb.log}"
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOGF" 2>/dev/null; printf '%s\n' "$*"; }
+RESTORE="${WM_RESTORE:-$APP/restore.sh}"
+REBOOT="${WM_REBOOT:-reboot}"
+flag_of() { local f; for f in "$1"/*; do [ -f "$f" ] || continue; [ "$(basename "$f" | tr a-z A-Z)" = "$2" ] && { echo "$f"; return 0; }; done; return 1; }
+snap_ok() { [ -f "$1/home.tar.gz" ] && [ -f "$1/SHA256SUMS" ] && ( cd "$1" && sha256sum -c --quiet SHA256SUMS >/dev/null 2>&1 ); }
+
+handle() {   # $1 = mounted stick. returns 10 = factory restore ran (reboot needed), 0 otherwise
+    local d="$1" rep="$1/WM-FACTORY-LOG.txt" flag from rc
+    if flag="$(flag_of "$d" WM-FACTORY)"; then
+        log "WM-FACTORY found on $d"
+        mv -f "$flag" "$flag.done" 2>/dev/null; sync
+        { echo "WM-FACTORY on the stick, $(date '+%F %T')"; echo "board: $(tr -d '\0' </proc/device-tree/model 2>/dev/null)"; } >>"$rep"
+        if snap_ok "$d/wm-factory-snapshot"; then from="$d/wm-factory-snapshot"; echo "snapshot: the one on the stick" >>"$rep"
+        elif snap_ok "$WM_HOME/wm-factory-snapshot"; then from="$WM_HOME/wm-factory-snapshot"; echo "snapshot: the one on the board" >>"$rep"
+        else echo "STOP: no snapshot that passes its checksum (stick or board). Nothing was changed." >>"$rep"; log "no usable snapshot"; sync; return 0; fi
+        echo "The factory restore starts now." >>"$rep"; sync
+        "$RESTORE" --factory --yes --from "$from" >>"$rep" 2>&1; rc=$?
+        echo "restore finished, exit code $rc, $(date '+%F %T')" >>"$rep"; log "restore exit $rc"
+        [ $rc = 0 ] && echo "Back to factory. The printer must be calibrated again. The board reboots now." >>"$rep"
+        sync; return 10
+    fi
+    if flag="$(flag_of "$d" WM-RESCUE)"; then
+        log "WM-RESCUE found on $d"
+        mv -f "$flag" "$flag.done" 2>/dev/null
+        { echo "WM-RESCUE on the stick, $(date '+%F %T')"
+          echo "board: $(tr -d '\0' </proc/device-tree/model 2>/dev/null)"
+          awk '/^(MemTotal|MemAvailable):/' /proc/meminfo 2>/dev/null
+          df -Pm "$WM_HOME" 2>/dev/null | awk 'NR==2{print "disk free MB: "$4}'
+          for s in klipper moonraker nginx crowsnest klipper-mcu KlipperScreen; do echo "$s: $(systemctl is-enabled $s 2>/dev/null) / $(systemctl is-active $s 2>/dev/null)"; done
+          snap_ok "$WM_HOME/wm-factory-snapshot" && echo "snapshot on the board: ok" || echo "snapshot on the board: MISSING or damaged"
+          echo "To go back to factory: put an empty file named WM-FACTORY on the stick and reboot."
+        } >>"$rep" 2>&1
+        sync
+    fi
+    return 0
+}
+
+result=0
+if [ -n "${WM_USB_MEDIA_DIR:-}" ]; then handle "$WM_USB_MEDIA_DIR"; result=$?
+else
+    wait="${WM_USB_WAIT:-20}"; t=0; mnt=/run/wm-factory-usb; devs=()
+    while [ $t -le "$wait" ]; do
+        devs=(); for dev in /sys/block/sd*; do [ -e "$dev" ] && [ "$(cat "$dev/removable" 2>/dev/null)" = 1 ] || continue
+            b="$(basename "$dev")"; for p in /dev/${b}[0-9]* /dev/$b; do [ -b "$p" ] && { devs+=("$p"); [ "$p" != "/dev/$b" ] && break; }; done; done
+        [ ${#devs[@]} -gt 0 ] && break; sleep 2; t=$((t+2))
+    done
+    [ ${#devs[@]} -eq 0 ] && { log "no USB stick"; exit 0; }
+    mkdir -p "$mnt"
+    for dev in "${devs[@]}"; do
+        mount -o rw,nosuid,nodev,noexec "$dev" "$mnt" 2>>"$LOGF" || { log "$dev did not mount"; continue; }
+        handle "$mnt"; result=$?; sync; umount "$mnt"; [ $result -ne 0 ] && break
+    done
+fi
+[ "$result" = 10 ] && { log "rebooting"; $REBOOT; }
+exit 0

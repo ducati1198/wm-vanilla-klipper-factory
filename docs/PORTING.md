@@ -16,7 +16,7 @@ Base: the Raspberry Pi installer of WM_Ultra_Vanilla_Klipper v2.25.2 (`installer
 - `--screen-layout`, `--screen-backend`, `--screen-test`, `--screen-remove` now stop with a message. `--screen` accepts only `off` or `macros`.
 - Add-on menu now lists: webcam, timelapse, shell-command, shaketune, spoolman, acepro, zr-tools. Gone from the menu: Touchscreen, NetworkManager, Obico, OctoApp, OctoEverywhere. (The `--obico`, `--octoapp`, `--octoeverywhere`, `--network-manager` flags still exist in the code and default to off.)
 - Test suite: KlipperScreen tests and NetworkManager tests removed (22 checks).
-The KlipperScreen functions are still in the file (unused). Removing them is a later cleanup step.
+The KlipperScreen code is removed from installer.sh too (screen test/layout/remove, panel copy, doctor and update blocks, `--screen-layout/-backend/-test/-remove` now stop with a message). Only the ZR Tools macros step stays. Removed tests: 2 KlipperScreen-removal checks, 2 Pi-to-screen-board update checks. `screen python tests` needs the `cairo` module (not in the build container): not run here.
 
 ## Test status (copy of the repo with factory/ committed, in a temp folder)
 Original repo in this container: 993 passed, 7 failed.
@@ -30,8 +30,9 @@ Next: fix those 2 tests, copy the missing docs, drop checks for things this proj
 
 ## Open decisions
 1. **factory/** (231 MB per model). The installer checks it against git (`git status -- factory`, `git checkout -- factory`), so it must be committed in the repo it runs from. Options: (a) commit only `factory/ultra-s` (231 MB), (b) keep the installer pulling a pinned clone of WM_Ultra_Vanilla_Klipper and use its `factory/`, (c) git submodule.
-2. Wire `vendor/acepro-panel` and `vendor/load-cell-mcu` into the installer instead of its `git clone` of the two GitHub repos.
-3. `install.sh` (the lean wrapper) still clones the vanilla repo; switch it to this folder's `installer.sh` once 1 and 2 are decided.
+2. DONE: the installer copies `vendor/acepro-panel` (Fluidd zip checked against its .sha256) and `vendor/load-cell-mcu` instead of cloning GitHub. The ACE Pro folder in `~` is now a plain copy (no .git): Fluidd's update button for it is not added.
+3. DONE: `install.sh` runs this folder's `installer.sh`; it stops with a message if `factory/` is missing (open decision 1).
+4. DONE: `WM-FACTORY` / `WM-RESCUE` USB flags: `usb_rescue/` (boot service `wm-factory-usb`, installed by `install.sh`, removed by `restore.sh --factory`), `tests/test_usb_flag.sh` (12 checks). NOT tested on hardware: the tests use a folder in place of the stick.
 
 ## Factory snapshot and restore (added on top of the port)
 - `snapshot.sh`, `lib/snapshot.sh`, `restore.sh --factory`, tests in `tests/test_snapshot.sh` (21 checks, fake home and system root).

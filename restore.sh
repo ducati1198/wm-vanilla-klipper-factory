@@ -83,5 +83,8 @@ while read -r name en act; do
 done <"$FROM/services.state"
 while read -r name en act; do [ "$act" = active ] && $SUDO $SYSTEMCTL start "$name" 2>/dev/null; done <"$FROM/services.state"
 ok "services set as before the install"
+# the USB boot check belongs to the vanilla install: remove it (it is running from /opt, a deleted script keeps running)
+[ -x "$HERE/usb_rescue/install.sh" ] && bash "$HERE/usb_rescue/install.sh" --remove >/dev/null 2>&1
+[ -x "$SYS_ROOT/opt/wm-factory-rescue/wm-usb-check" ] && $SUDO rm -rf "$SYS_ROOT/opt/wm-factory-rescue" "$SYS_ROOT/etc/systemd/system/wm-factory-usb.service" "$SYS_ROOT/etc/default/wm-factory-usb"
 [ "$WARNINGS" = 0 ] || say "$WARNINGS warning(s): read them above."
 if [ "$REBOOT" = 1 ]; then say "rebooting"; $SUDO reboot; else say "done. Reboot the board to finish: sudo reboot"; fi

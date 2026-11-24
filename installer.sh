@@ -63,10 +63,7 @@
 # ./installer.sh --set-hostname NAME   the name.local address of this Pi (asks first)
 # ./installer.sh --no-backup           with --update: skip the automatic backup that is otherwise saved first (the newest 5 are kept in ~/ultra-backup/settings)
 # ./installer.sh --obico on|off        optional remote access: Obico for Klipper (moonraker-obico). Also --octoapp on|off and --octoeverywhere on|off. Each is asked (default no)
-# ./installer.sh --screen on|off|macros   KlipperScreen on the Pi (on), nothing (off), or only the ZR Tools macros (macros: for the WonderMaker screen board). Asked if not given; default on
-# ./installer.sh --screen-layout tabs|grid   touch layout: tabs = big buttons + bottom tabs (default), grid = card grid
-# ./installer.sh --screen-backend x11|weston|cage   graphics stack for KlipperScreen (default x11)
-# ./installer.sh --screen-remove       remove KlipperScreen from this Pi (Klipper, Moonraker and Fluidd stay)
+# ./installer.sh --screen off|macros   nothing (off) or the ZR Tools macros in printer.cfg (macros, default). Asked if not given; default on
 # ./installer.sh --screen-test         read-only: show the screen and touch device found on this Pi
 # ./installer.sh --no-start            at the end of an install do not enable or start Klipper
 # ./installer.sh --force               continue even if a print is active (not recommended)
@@ -97,7 +94,7 @@ MODE="install"
 DRY=0
 MOONRAKER_CHANGED=0; IMPORT_HOST=""; SRC_KIND=""; SRC_ARG=""; MODEL="ultra-s"; MODULES_DIR=""; FROM_FACTORY=0
 WANT_PANEL=1; WANT_SCREEN=macros; WANT_TIMELAPSE=1; WANT_CROWSNEST=1; CAM_COUNT=""; CAM_RES=""; CAM_FPS=""; CAM_MODE=""; SCREEN_CAM=""; CLI_SCREEN_CAM=""; CLI_CAM_COUNT=""; CLI_CAM_RES=""; CLI_CAM_FPS=""; CLI_CAM_MODE=""; CLI_REMOTE=""; ONLY_ADDON=""; WANT_SHELLCMD=1; OBICO_SERVER=""; WANT_OBICO=ask; WANT_OCTOAPP=ask; WANT_OCTOEVERYWHERE=ask; WANT_NETMGR=ask; WANT_SHAKETUNE=0; WANT_SPOOLMAN=0; WANT_ACEPRO=ask; NO_BACKUP=0; FIXALL=0
-SCREEN_LAYOUT=""; SCREEN_BACKEND="x11"; REPO_DIR="$SCRIPT_DIR"
+REPO_DIR="$SCRIPT_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_ROOT="$HOME_DIR/wm-rpi-backup"
 ULTRA="$HOME_DIR/ultra-backup"; WMB="$ULTRA/settings"   # item 36: every backup lives under ~/ultra-backup, sorted by type (settings, config, fluidd-page, fluidd-macros, installer, drivers, other)
@@ -274,7 +271,7 @@ while [ $# -gt 0 ]; do
         --uninstall)    MODE=uninstall ;;
         --dry-run)      DRY=1 ;;
         --yes)          WM_ASSUME_YES=1 ;;
-        --version)      echo "WM_Ultra_Vanilla_Klipper installer $VERSION"; exit 0 ;;
+        --version)      echo "wm-vanilla-klipper-factory installer $VERSION"; exit 0 ;;
         -h|--help)      usage; exit 0 ;;
         *) print_error "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -1141,17 +1138,14 @@ step_can() {
 
 
 # ---- the load cell board (CELL) firmware V2, from the project wm-load-cell-mcu ----------------------------
-cell_get() {   # downloads (git clone) or updates the project in ~/wm-load-cell-mcu; 0 = the folder is usable
+cell_get() {   # copies vendor/load-cell-mcu of this repository to ~/wm-load-cell-mcu; 0 = the folder is usable
     if [ "$TESTING" = 1 ]; then
         [ -n "${WM_TEST_CELL_DIR:-}" ] && [ -f "$WM_TEST_CELL_DIR/install.sh" ] || return 1
         rm -rf "$CELL_DIR"; mkdir -p "$CELL_DIR"; cp -a "$WM_TEST_CELL_DIR/." "$CELL_DIR/"; return 0
     fi
-    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would download or update https://github.com/$CELL_REPO in $CELL_DIR${NC}"; return 0; fi
-    if [ -d "$CELL_DIR/.git" ]; then
-        git -C "$CELL_DIR" pull --ff-only -q 2>/dev/null || print_warning "Could not update $CELL_DIR (no internet, or you changed files there). The copy that is there is used."
-    elif [ ! -e "$CELL_DIR" ]; then
-        git clone -q --depth 1 "https://github.com/$CELL_REPO.git" "$CELL_DIR" 2>/dev/null || { rm -rf "$CELL_DIR"; return 1; }
-    fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would copy vendor/load-cell-mcu of this repository to $CELL_DIR${NC}"; return 0; fi
+    [ -f "$SCRIPT_DIR/vendor/load-cell-mcu/install.sh" ] || return 1
+    mkdir -p "$CELL_DIR" && cp -a "$SCRIPT_DIR/vendor/load-cell-mcu/." "$CELL_DIR/" || return 1
     [ -f "$CELL_DIR/install.sh" ] && [ -f "$CELL_DIR/zr-ultra/2_flash_app_can.sh" ]
 }
 cell_latest() { tr -d ' \r\n' < "$CELL_DIR/zr-ultra/firmware/LATEST" 2>/dev/null; }   # name of the newest patched firmware, for example KLP_CELL_WM_ZRU_RPI_V2_20261117
@@ -1177,7 +1171,7 @@ step_load_cell() {   # end of a full install: is the load cell board on firmware
         return 0
     fi
     if [ "$DRY" = 1 ]; then echo -e "  ${DIM}the board runs $cur; a real install downloads the project and offers firmware V2 only when the board is not on the newest one${NC}"; return 0; fi
-    cell_get || { warn_later "The load cell board firmware could not be downloaded from github.com/$CELL_REPO (no internet?). Later: ./installer.sh --load-cell"; return 0; }
+    cell_get || { warn_later "The load cell board firmware could not be copied from vendor/load-cell-mcu (incomplete copy of this repository?). Later: ./installer.sh --load-cell"; return 0; }
     latest="$(cell_latest)"
     case "$cur" in
         *"$latest"*) print_success "The load cell board already runs $cur. Nothing to do."; return 0 ;;
@@ -1193,35 +1187,30 @@ step_load_cell() {   # end of a full install: is the load cell board on firmware
 }
 do_load_cell() {   # ./installer.sh --load-cell and Advanced > Load cell board: the menu of the wm-load-cell-mcu project
     print_header "Load cell board (CELL)"
-    echo "  The firmware of the load cell board (under the heated bed) and its flash menu come from github.com/$CELL_REPO."
-    cell_get || { print_error "Could not download github.com/$CELL_REPO into $CELL_DIR."; echo "  Connect the Pi to the network and try again."; return 1; }
+    echo "  The firmware of the load cell board (under the heated bed) and its flash menu come from vendor/load-cell-mcu in this repository."
+    cell_get || { print_error "Could not copy vendor/load-cell-mcu into $CELL_DIR."; echo "  Get a complete copy of this repository and try again."; return 1; }
     if [ "$TESTING" = 1 ]; then echo "[test] load cell menu" >> "$HOME_DIR/.cell.log"; return 0; fi
     [ "$DRY" = 1 ] && return 0
     bash "$CELL_DIR/install.sh"
 }
 
-panel_get() {  # sets PANEL_ZIP and PANEL_FROM: the newest panel from the panel repository, else the copy in this repository
+panel_get() {  # sets PANEL_ZIP and PANEL_FROM: the Fluidd panel zip inside this repository (vendor/acepro-panel/fluidd)
     [ -n "$PANEL_ZIP" ] && return 0
     local tmp="$BACKUP_ROOT/.panel-dl"; local name="" api raw
     if [ "$TESTING" = 1 ]; then
         if [ -n "${WM_TEST_PANEL_DIR:-}" ]; then name="$(ls "$WM_TEST_PANEL_DIR"/*.zip 2>/dev/null | head -1)"; [ -n "$name" ] && PANEL_ZIP="$name" && PANEL_FROM="the panel repository (test)" && return 0; fi
     elif [ "$DRY" != 1 ]; then
-        mkdir -p "$tmp"; rm -f "$tmp"/*
-        api="https://api.github.com/repos/$PANEL_REPO/contents/fluidd?ref=main"
-        raw="https://raw.githubusercontent.com/$PANEL_REPO/main/fluidd"
-        name="$(curl -fsS -m 15 "$api" 2>/dev/null | python3 -c 'import sys,json
-try: print(next(f["name"] for f in json.load(sys.stdin) if f["name"].endswith(".zip")))
-except Exception: pass' 2>/dev/null)"
-        if [ -n "$name" ] && curl -fsSL -m 120 -o "$tmp/$name" "$raw/$name" && curl -fsSL -m 20 -o "$tmp/$name.sha256" "$raw/$name.sha256" \
-           && ( cd "$tmp" && sha256sum -c "$name.sha256" >/dev/null 2>&1 ) \
-           && python3 -c 'import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);assert "index.html" in z.namelist()' "$tmp/$name" 2>/dev/null; then
-            PANEL_ZIP="$tmp/$name"; PANEL_FROM="github.com/$PANEL_REPO ($name)"
-            print_success "Latest Fluidd panel downloaded from $PANEL_REPO (checksum ok)"; return 0
+        local vz vdir="$SCRIPT_DIR/vendor/acepro-panel/fluidd"
+        vz="$(ls "$vdir"/*.zip 2>/dev/null | head -1)"
+        if [ -n "$vz" ] && [ -f "$vz.sha256" ] && ( cd "$vdir" && sha256sum -c "$(basename "$vz").sha256" >/dev/null 2>&1 ) \
+           && python3 -c 'import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);assert "index.html" in z.namelist()' "$vz" 2>/dev/null; then
+            PANEL_ZIP="$vz"; PANEL_FROM="this repository ($(basename "$vz"))"
+            print_success "Fluidd panel taken from this repository (checksum ok)"; return 0
         fi
-        print_warning "Could not get a verified panel from $PANEL_REPO."
+        print_warning "The Fluidd panel in vendor/acepro-panel/fluidd is missing or its checksum does not match."
     fi
-    print_error "The Fluidd panel could not be downloaded from $PANEL_REPO."
-    echo "  Without internet the web page cannot be installed. Connect the Pi to the network, then run: ./installer.sh --update"
+    print_error "The Fluidd panel of this repository is missing or damaged (vendor/acepro-panel/fluidd)."
+    echo "  Get a complete copy of the repository, then run: ./installer.sh --update"
     return 1
 }
 
@@ -1428,72 +1417,8 @@ step_ultrabackup() {   # every install and update, and ./installer.sh --ultra-ba
 }
 
 # ---------------------------------------------------------------------------
-# Touchscreen (KlipperScreen + ZR Tools). NOT YET TESTED ON HARDWARE.
+# ZR Tools macros (the screen board is the host; there is no KlipperScreen in this project).
 # ---------------------------------------------------------------------------
-KS_DIR="$HOME_DIR/KlipperScreen"
-ZR_CONF="$HOME_DIR/printer_data/config/zr_screen.conf"
-
-detect_screen() {  # prints "WIDTHxHEIGHT touch|notouch" (size empty when no screen is found)
-    local res="" touch=notouch f m
-    if [ -n "${WM_TEST_SCREEN+x}" ]; then res="$WM_TEST_SCREEN"; [ "${WM_TEST_TOUCH:-0}" = 1 ] && touch=touch
-    else
-        for f in /sys/class/drm/card*-*/status; do
-            [ -r "$f" ] && [ "$(cat "$f" 2>/dev/null)" = connected ] || continue
-            m="$(head -n1 "$(dirname "$f")/modes" 2>/dev/null)"; [ -n "$m" ] && { res="$m"; break; }
-        done
-        local e; for e in /sys/class/input/event*; do
-            [ -e "$e" ] && udevadm info -q property -p "$e" 2>/dev/null | grep -q '^ID_INPUT_TOUCHSCREEN=1' && { touch=touch; break; }
-        done
-    fi
-    echo "${res:-} $touch"
-}
-
-screen_density_hint() {  # WIDTHxHEIGHT -> compact|comfortable (short side <= 520 or long side <= 900 is compact)
-    local w="${1%%x*}" h="${1##*x}"
-    [[ "$w" =~ ^[0-9]+$ ]] || { echo compact; return; }
-    if ! [[ "$h" =~ ^[0-9]+$ ]]; then [ "$w" -le 900 ] && echo compact || echo comfortable; return; fi
-    local s=$w l=$h; [ "$h" -lt "$w" ] && { s=$h; l=$w; }
-    if [ "$s" -le 520 ] || [ "$l" -le 900 ]; then echo compact; else echo comfortable; fi
-}
-
-screen_orientation() {  # WIDTHxHEIGHT -> wide|tall
-    local w="${1%%x*}" h="${1##*x}"
-    [[ "$w" =~ ^[0-9]+$ && "$h" =~ ^[0-9]+$ ]] && [ "$h" -gt "$w" ] && echo tall || echo wide
-}
-
-do_screen_test() {
-    print_header "Screen test (read-only)"
-    local r t; read -r r t < <(detect_screen)
-    if [ -n "$r" ]; then print_success "Screen found: $r (ZR Tools size: comfortable by default; Auto would pick $(screen_density_hint "$r"))"
-        print_success "Orientation: $(screen_orientation "$r") (ZR Tools lays itself out for wide and tall screens)"; else print_warning "No screen found on the Pi's video output."; fi
-    [ "$t" = touch ] && print_success "Touch device found." || print_warning "No touch device found (a USB touch cable, or the screen has no touch)."
-    echo "  Rotation is an operating-system setting, see README 'Touchscreen'."
-}
-
-write_screen_conf() {  # layout from --screen-layout, else keep, else default tabs; density comfortable
-    local layout="$SCREEN_LAYOUT" theme=dark density=comfortable
-    if [ -f "$ZR_CONF" ]; then
-        [ -n "$layout" ] || layout="$(sed -n 's/^layout *= *//p' "$ZR_CONF" | head -n1)"
-        theme="$(sed -n 's/^theme *= *//p' "$ZR_CONF" | head -n1)"; density="$(sed -n 's/^density *= *//p' "$ZR_CONF" | head -n1)"
-    fi
-    case "$layout" in tabs|grid) ;; *) layout=tabs ;; esac
-    case "$theme" in dark|light) ;; *) theme=dark ;; esac
-    case "$density" in auto|compact|comfortable) ;; *) density=comfortable ;; esac
-    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would write $ZR_CONF (layout=$layout)${NC}"; return 0; }
-    mkdir -p "$(dirname "$ZR_CONF")"
-    printf '# Written by ./installer.sh and the ZR Tools Settings page\n[screen]\nlayout = %s\ndensity = %s\ntheme = %s\n' "$layout" "$density" "$theme" > "$ZR_CONF"
-}
-
-copy_zr_panel() {  # (re)copy the panel files into KlipperScreen
-    [ "$DRY" = 1 ] && { echo -e "  ${DIM}would copy zr_tools/*.py into ~/KlipperScreen/panels${NC}"; return 0; }
-    mkdir -p "$KS_DIR/panels"
-    cp "$REPO_DIR"/zr_tools/{zr_tools.py,zr_views.py,zr_logic.py} "$KS_DIR/panels/"
-    python3 "$REPO_DIR/zr_tools/make_unlock_icon.py" "$KS_DIR" >/dev/null 2>&1 || true   # the "Unlock gripper" button asks for an icon that KlipperScreen does not ship
-    if [ -d "$KS_DIR/.git" ]; then   # KlipperScreen updates must not delete our files
-        mkdir -p "$KS_DIR/.git/info"
-        grep -qs '^panels/zr_' "$KS_DIR/.git/info/exclude" || echo 'panels/zr_*.py' >> "$KS_DIR/.git/info/exclude"
-    fi
-}
 
 step_macros() {   # only the ZR Tools macros in printer.cfg: for people whose screen is the WonderMaker screen board (its KlipperScreen sends these macros to this Pi)
     print_header "Step 11: ZR Tools macros (no KlipperScreen on this Pi)"
@@ -1506,37 +1431,7 @@ step_macros() {   # only the ZR Tools macros in printer.cfg: for people whose sc
     else warn_later "printer.cfg not found: ZR Tools macros not installed. Run ./installer.sh --update."; fi
 }
 
-step_screen() {
-    [ "$WANT_SCREEN" = macros ] && { step_macros; return 0; }
-    [ "$WANT_SCREEN" = 1 ] || return 0
-    print_header "Step 11: touchscreen (KlipperScreen + ZR Tools)"
-    why "A screen connected to the Pi shows KlipperScreen with a ZR Tools page: toolheads, filament, climate, calibration, ACE Pro (if present). Not yet tested on hardware."
-    local r t; read -r r t < <(detect_screen)
-    [ -n "$r" ] && print_info "Screen found: $r, size comfortable by default" || print_warning "No screen detected now. KlipperScreen is installed anyway."
-    [ "$t" = touch ] || print_warning "No touch device detected now."
-    local pin url sha; pin="$(addon_pin klipperscreen)"; url="${pin%|*}"; sha="${pin#*|}"
-    fetch_addon "$url" "$sha" "$KS_DIR" || { warn_later "Could not download KlipperScreen (network?). Run ./installer.sh --update later."; return 0; }
-    local be=X comp=""
-    case "$SCREEN_BACKEND" in weston) be=W; comp=weston ;; cage) be=W; comp=cage ;; esac
-    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: KlipperScreen-install.sh (backend $SCREEN_BACKEND, service on, NetworkManager off)${NC}"
-    elif [ "$TESTING" = 1 ]; then echo "[test] KlipperScreen-install backend=$SCREEN_BACKEND" >> "$HOME_DIR/.sudo.log"
-    else
-        ( cd "$KS_DIR" && BACKEND="$be" COMPOSITOR="$comp" SERVICE=y START=0 NETWORK=n bash scripts/KlipperScreen-install.sh ) \
-            || { warn_later "KlipperScreen install failed (see output above). Run ./installer.sh --update to retry."; return 0; }
-    fi
-    copy_zr_panel
-    write_screen_conf
-    if [ "$DRY" != 1 ]; then
-        mkdir -p "$HOME_DIR/printer_data/config"
-        [ -f "$HOME_DIR/printer_data/config/printer.cfg" ] && \
-            HOME="$HOME_DIR" ZR_NO_RESTART=1 bash "$REPO_DIR/zr_tools/install_zr_tools.sh" >/dev/null || warn_later "printer.cfg not found: ZR Tools macros not installed. Run ./installer.sh --update."
-    fi
-    record "HOMEDIR KlipperScreen"; record "FILE /etc/systemd/system/KlipperScreen.service"
-    SUDO systemctl enable KlipperScreen
-    [ "$AUTOSTART" = 1 ] && SUDO systemctl restart KlipperScreen
-    print_success "Touchscreen installed (layout: $(sed -n 's/^layout *= *//p' "$ZR_CONF" 2>/dev/null | head -n1)). Change it with ./installer.sh --screen-layout tabs|grid or on the ZR Tools Settings page."
-    [ "$SCREEN_BACKEND" = x11 ] && echo "  Rotate: add 'xrandr --output <name> --rotate left' to an X11 autostart (README, 'Touchscreen')."
-}
+step_screen() { [ "$WANT_SCREEN" = macros ] && step_macros; return 0; }   # the only screen part left: the ZR Tools macros in printer.cfg
 
 PROG_RM=0; PROG_RM_SEEN=""
 rm_event() {   # key label : one step of a single removal reached; the bar moves once per kind of step
@@ -1609,32 +1504,6 @@ open(p, "w").write("\n".join(out))
 PY
     print_info "Removed [update_manager $1] from moonraker.conf (copy: moonraker.conf.wm-before-$1-removal-$STAMP)"
 }
-do_screen_remove() {
-    print_header "Remove the touchscreen (KlipperScreen)"
-    load_answers || true
-    [ -d "$KS_DIR" ] || [ "$TESTING" = 1 ] || [ -f /etc/systemd/system/KlipperScreen.service ] || die_with_fix "KlipperScreen is not installed on this Pi." "nothing to remove."
-    echo "Removes the KlipperScreen service, ~/KlipperScreen and its Python environment. Klipper, Moonraker, Fluidd and the ZR Tools macros stay."
-    ask_yn "Continue?" n || exit 0
-    run_official_uninstall KlipperScreen "$KS_DIR" bash scripts/Uninstall.sh
-    SUDO systemctl stop KlipperScreen; SUDO systemctl disable KlipperScreen
-    SUDO rm -f /etc/systemd/system/KlipperScreen.service; SUDO systemctl daemon-reload
-    if [ "$DRY" != 1 ]; then
-        rm_path "$KS_DIR" "$HOME_DIR/.KlipperScreen-env"
-        moonraker_drop_update_section KlipperScreen
-        local f="$HOME_DIR/printer_data/config/KlipperScreen.conf"
-        [ -f "$f" ] && sed -i '/^\[menu __main zr_tools\]/,/^$/d' "$f"
-        WANT_SCREEN=macros; save_answers     # the ZR Tools macros stay in printer.cfg
-    fi
-    print_success "KlipperScreen removed. The ZR Tools macros and your settings file zr_screen.conf were kept. Add KlipperScreen again with: ./installer.sh --screen on --update"
-}
-
-do_screen_layout() {
-    print_header "Screen layout"
-    write_screen_conf
-    SUDO systemctl restart KlipperScreen
-    print_success "Layout set to $SCREEN_LAYOUT."
-}
-
 fetch_addon() {  # url sha dir : clone once, then pin to the version WonderMaker ships
     local url="$1" sha="$2" dir="$3"
     [ "$DRY" = 1 ] && { echo -e "  ${DIM}would run: git clone $url $dir @ ${sha:0:7}${NC}"; return 0; }
@@ -1898,13 +1767,14 @@ step_acepro() {
     print_header "Step 12h: Anycubic ACE Pro"
     why "Adds the ACE Pro driver for Klipper and its config files (rpi_ace_driver.cfg, rpi_ace.cfg, rpi_endless.cfg, rpi_stats.cfg). They come from the project wm-ultra-fluidd-acepro-panel, by running its own installer. Klipper loads the driver after it restarts. The ACE Pro is only used to load, unload and dry filament (the four toolheads do the switching)."
     local dir cfgd="$HOME_DIR/printer_data/config" mode=--install; dir="$(ace_dir)"
-    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: download $ACE_REPO_URL to ~/wm-ultra-fluidd-acepro-panel (or update it), then run its installer.sh with the default answers${NC}"; return 0; fi
+    if [ "$DRY" = 1 ]; then echo -e "  ${DIM}would run: copy vendor/acepro-panel of this repository to ~/wm-ultra-fluidd-acepro-panel, then run its installer.sh with the default answers${NC}"; return 0; fi
     [ -d "$HOME_DIR/klipper/klippy/extras" ] && [ -f "$cfgd/printer.cfg" ] || { warn_later "ACE Pro: Klipper or printer.cfg is not there yet. Run ./installer.sh --update --acepro on once they are."; return 0; }
     if [ "$TESTING" = 1 ]; then
         [ -d "$dir" ] || { [ -n "${WM_TEST_ACEPRO_SRC:-}" ] && [ -d "$WM_TEST_ACEPRO_SRC" ] && cp -a "$WM_TEST_ACEPRO_SRC" "$dir"; } || { warn_later "ACE Pro: could not get the project (test)."; return 0; }
-    elif [ -d "$dir/.git" ]; then git -C "$dir" pull -q --ff-only || print_warning "Could not update ~/wm-ultra-fluidd-acepro-panel (network?). Using the copy that is there."
-    elif [ ! -e "$dir" ]; then git clone -q --depth 1 "$ACE_REPO_URL" "$dir" || { warn_later "ACE Pro: could not download $ACE_REPO_URL (network?). Run ./installer.sh --update --acepro on to retry."; return 0; }
-    else warn_later "ACE Pro: $dir exists but is not a git copy. Move it away and run ./installer.sh --update --acepro on."; return 0; fi
+    else   # the project is inside this repository: copy it to ~/wm-ultra-fluidd-acepro-panel (Klipper links the driver from there)
+        [ -f "$SCRIPT_DIR/vendor/acepro-panel/installer.sh" ] || { warn_later "ACE Pro: vendor/acepro-panel is missing from this repository. Get a complete copy."; return 0; }
+        mkdir -p "$dir" && cp -a "$SCRIPT_DIR/vendor/acepro-panel/." "$dir/" || { warn_later "ACE Pro: could not copy the project to $dir."; return 0; }
+    fi
     [ -f "$dir/installer.sh" ] || { warn_later "ACE Pro: $dir has no installer.sh."; return 0; }
     record "HOMEDIR wm-ultra-fluidd-acepro-panel"
     [ -f "$cfgd/rpi-ultra-install.conf" ] && mode=--update
@@ -1915,7 +1785,7 @@ step_acepro() {
 }
 
 installer_update_block() {   # the [update_manager] section of this installer: the Update button downloads it, wm-pi-update.path applies it
-    printf '[update_manager WM_Ultra_Vanilla_Klipper]\ntype: git_repo\npath: %s\norigin: https://github.com/ducati1198/WM_Ultra_Vanilla_Klipper.git\nprimary_branch: main\nis_system_service: False\ninfo_tags:\n  desc=WonderMaker Ultra vanilla Klipper Pi installer. The Update button downloads the new installer and applies it (like ./installer.sh --update, log: ~/wm-pi-update.log)\n' "$REPO_DIR"
+    printf '[update_manager WM_Ultra_Vanilla_Klipper]\ntype: git_repo\npath: %s\norigin: https://github.com/ducati1198/wm-vanilla-klipper-factory.git\nprimary_branch: main\nis_system_service: False\ninfo_tags:\n  desc=WonderMaker Ultra vanilla Klipper Pi installer. The Update button downloads the new installer and applies it (like ./installer.sh --update, log: ~/wm-pi-update.log)\n' "$REPO_DIR"
 }
 moonraker_add_update_entries() {   # [update_manager ...] for this installer's repo and the ACE Pro panel repo, so Fluidd shows when GitHub has a newer version
     local conf="$HOME_DIR/printer_data/config/moonraker.conf" added=""
@@ -2388,9 +2258,7 @@ MODEL=$MODEL
 SRC_KIND=$SRC_KIND
 WANT_PANEL=$WANT_PANEL
 WANT_SCREEN=$WANT_SCREEN
-SCREEN_BACKEND=$SCREEN_BACKEND
 REPO_DIR=$REPO_DIR
-KS_PIN=$(addon_pin klipperscreen | cut -d'|' -f2)
 WANT_TIMELAPSE=$WANT_TIMELAPSE
 WANT_CROWSNEST=$WANT_CROWSNEST
 CAM_COUNT=$CAM_COUNT
@@ -2421,7 +2289,7 @@ load_answers() {
             WANT_PANEL|WANT_SCREEN|WANT_TIMELAPSE|WANT_CROWSNEST|WANT_SHELLCMD|WANT_OBICO|WANT_OCTOAPP|WANT_OCTOEVERYWHERE|WANT_NETMGR|WANT_SHAKETUNE|WANT_SPOOLMAN|WANT_ACEPRO|OBICO_SERVER) printf -v "$k" '%s' "$v" ;;
             SCREEN_CAM) [ -n "${CLI_SCREEN_CAM:-}" ] || SCREEN_CAM="$v" ;;
             CAM_COUNT) [ -n "${CLI_CAM_COUNT:-}" ] || CAM_COUNT="$v" ;; CAM_RES) [ -n "${CLI_CAM_RES:-}" ] || CAM_RES="$v" ;; CAM_FPS) [ -n "${CLI_CAM_FPS:-}" ] || CAM_FPS="$v" ;; CAM_MODE) [ -n "${CLI_CAM_MODE:-}" ] || CAM_MODE="$v" ;;
-            SCREEN_BACKEND) printf -v "$k" '%s' "$v" ;; KS_PIN) OLD_KS_PIN="$v" ;;
+           
         esac
     done < "$CONF"
     local r; for r in ${CLI_REMOTE:-}; do case "$r" in obico) WANT_OBICO="$CLI_OBICO" ;; octoapp) WANT_OCTOAPP="$CLI_OCTOAPP" ;; octoeverywhere) WANT_OCTOEVERYWHERE="$CLI_OCTOEVERYWHERE" ;; netmgr) WANT_NETMGR="$CLI_NETMGR" ;; shaketune) WANT_SHAKETUNE="$CLI_SHAKETUNE" ;; spoolman) WANT_SPOOLMAN="$CLI_SPOOLMAN" ;; acepro) WANT_ACEPRO="$CLI_ACEPRO" ;; webcam) WANT_CROWSNEST="$CLI_WEBCAM" ;; timelapse) WANT_TIMELAPSE="$CLI_TIMELAPSE" ;; esac; done
@@ -2911,9 +2779,6 @@ do_update() {
         if [ -n "$sha" ] && [ "$sha" != "${OLD_PANEL_SHA:-}" ]; then step_panel; else print_success "Fluidd panel is already the latest"; fi
     fi
     progress_bar 55 100 "Update step 6 of $UT: touchscreen and add-ons"
-    if [ "$WANT_SCREEN" = 1 ] && upd_wants screen; then
-        if [ "$(addon_pin klipperscreen | cut -d'|' -f2)" != "${OLD_KS_PIN:-}" ] || [ ! -d "$KS_DIR" ]; then step_screen; else copy_zr_panel; print_success "ZR Tools screen files refreshed"; fi
-    fi
     if [ "$WANT_SCREEN" = macros ] && upd_wants screen; then step_macros; fi
     if [ "$WANT_NETMGR" = 1 ] && upd_wants network-manager; then step_netmgr; fi
     if [ "$WANT_TIMELAPSE" = 1 ] && upd_wants timelapse; then step_timelapse; fi
@@ -3196,7 +3061,6 @@ do_repair() {
     guard_not_printing
     load_answers || true
     step_groups; step_services_files; step_polkit; step_nginx; step_can
-    [ "$WANT_SCREEN" = 1 ] && [ -d "$KS_DIR" ] && copy_zr_panel
     SUDO systemctl restart moonraker
     self_test; print_success "Repaired."
 }
@@ -3468,16 +3332,6 @@ do_doctor() {
     progress_bar 4 5 "Doctor 5 of 5: disk space and power"
     local free; free=$(df -Pm "$HOME_DIR" | awk 'NR==2{print $4}'); [ "${free:-0}" -gt 800 ] && doc_ok "disk space (${free} MB free)" || doc_bad "only ${free} MB free" "Old backups: ~/ultra-backup (./installer.sh --ultra-backup shows the size) and ~/wm-rpi-backup. Gcode files: ~/printer_data/gcodes."
     local p; p="$(power_flags)"; if [ -z "$p" ] || [ "$p" = 0x0 ]; then doc_ok "no power problems reported"; else doc_bad "the Pi reported power/heat flags $p" "Use the official 5 V / 3 A supply and a short cable."; fi
-    if [ "$WANT_SCREEN" = 1 ]; then
-        [ -d "$KS_DIR" ] && doc_ok "KlipperScreen is installed" || doc_bad "KlipperScreen is missing" "Run ./installer.sh --update."
-        if [ -d "$KS_DIR" ]; then
-            [ -f "$KS_DIR/panels/zr_tools.py" ] && [ -f "$KS_DIR/panels/zr_views.py" ] && [ -f "$KS_DIR/panels/zr_logic.py" ] && doc_ok "ZR Tools panel files" \
-                || { doc_bad "ZR Tools panel files are missing in KlipperScreen" "A KlipperScreen update may have removed them."; offer_fix "copy them again" copy_zr_panel; }
-        fi
-        [ "$(service_enabled KlipperScreen)" = enabled ] && doc_ok "KlipperScreen starts at boot" || { doc_bad "KlipperScreen will not start at boot" "The screen stays black after a restart."; offer_fix "enable KlipperScreen" bash -c "sudo systemctl enable KlipperScreen"; }
-        local r t; read -r r t < <(detect_screen); [ -n "$r" ] && doc_ok "screen found ($r)" || doc_bad "no screen detected" "Check the video cable and power."
-        [ "$t" = touch ] && doc_ok "touch device found" || doc_bad "no touch device detected" "Check the USB touch cable."
-    fi
     if [ "$WANT_SCREEN" = macros ]; then
         local c="$HOME_DIR/printer_data/config"
         { [ -f "$c/zr_tools.cfg" ] && grep -q '^\[include zr_tools.cfg\]' "$c/printer.cfg" 2>/dev/null; } && doc_ok "ZR Tools macros are in printer.cfg" || doc_bad "ZR Tools macros are missing from printer.cfg" "Run ./installer.sh --update."
@@ -3775,7 +3629,6 @@ do_remove_addon_core() {
             print_success "$name removed."
             [ "$name" != obico ] && moonraker_drop_update_section "$name"
             print_info "Restart Moonraker$([ "$name" = obico ] && echo " and Klipper") from Fluidd when you are ready." ;;
-        screen) do_screen_remove ;;
         acepro)
             local adir bk tl="~"; adir="$(ace_dir)"; bk="$HOME_DIR/ultra-backup/installer/acepro-panel"; [ -d "$bk" ] || bk="$HOME_DIR/acepro-backup"   # the panel installer keeps its undo folders in ~/ultra-backup since 1.16.0
             if ! ace_installed && [ ! -d "$adir" ] && [ ! -L "$HOME_DIR/klipper/klippy/extras/ace" ] && ! ls "$cfgd"/rpi_ace*.cfg "$cfgd"/rpi_endless.cfg "$cfgd"/rpi_stats.cfg >/dev/null 2>&1; then print_info "The ACE Pro is not installed."; return 0; fi
@@ -3985,7 +3838,7 @@ menu_item() { if [ -n "$3" ]; then printf '   %s) %-28s %b%s%b\n' "$1" "$2" "$DI
 
 addon_status() {   # name -> installed|running|not installed
     case "$1" in
-        screen)   [ -d "$KS_DIR" ] && { [ "$(service_state KlipperScreen)" = active ] && echo running || echo installed; } || echo "not installed" ;;
+        screen)   [ -f "$HOME_DIR/printer_data/config/zr_tools.cfg" ] && echo installed || echo "not installed" ;;
         network-manager) [ "$(service_state NetworkManager)" = active ] && echo running || { [ "$(service_enabled NetworkManager)" = enabled ] && echo installed || echo "not installed"; } ;;
         webcam)   [ -d "$HOME_DIR/crowsnest" ] && { [ "$(service_state crowsnest)" = active ] && echo running || { camera_present && echo installed || echo "waiting for a camera"; }; } || echo "not installed" ;;
         timelapse) [ -d "$HOME_DIR/moonraker-timelapse" ] && echo installed || echo "not installed" ;;
@@ -4042,7 +3895,7 @@ menu_updates() {
 
 menu_addons() {
     local k items=(webcam timelapse shell-command shaketune spoolman acepro zr-tools)
-    declare -A label=([screen]="Touchscreen (KlipperScreen)" [shaketune]="Klippain Shake&Tune" [spoolman]="Spoolman (filament spools)" [acepro]="Anycubic ACE Pro (feeder, dryer)" [network-manager]="NetworkManager (Network panel)" [webcam]="Webcam (crowsnest)" [timelapse]="Timelapse" [shell-command]="Klipper gcode shell command" [obico]="Obico for Klipper" [octoapp]="OctoApp" [octoeverywhere]="OctoEverywhere" [zr-tools]="ZR Tools macros (screen board)")
+    declare -A label=([screen]="ZR Tools macros" [shaketune]="Klippain Shake&Tune" [spoolman]="Spoolman (filament spools)" [acepro]="Anycubic ACE Pro (feeder, dryer)" [network-manager]="NetworkManager (Network panel)" [webcam]="Webcam (crowsnest)" [timelapse]="Timelapse" [shell-command]="Klipper gcode shell command" [obico]="Obico for Klipper" [octoapp]="OctoApp" [octoeverywhere]="OctoEverywhere" [zr-tools]="ZR Tools macros (screen board)")
     declare -A help=([acepro]="Klipper driver and config for the ACE Pro, from wm-ultra-fluidd-acepro-panel" [spoolman]="Filament spool tracking, shown in Fluidd (port 7912)" [shaketune]="Input shaper and vibration graphs (by Frix-x)" [network-manager]="Wi-Fi choice on the screen. Can drop the network until a reboot" [screen]="Screen plugged into the Pi, with the ZR Tools page" [webcam]="USB camera streams for Fluidd" [timelapse]="Moonraker timelapse + ffmpeg" [shell-command]="RUN_SHELL_COMMAND: run Linux commands from G-code" [obico]="Remote view and failure detection (obico.io account)" [octoapp]="Phone app notifications and control" [octoeverywhere]="Remote access, webcam and notifications (free account)" [zr-tools]="For the WonderMaker screen board: checks, then installs what is missing")
     while true; do
         echo; echo "  Add-ons"
@@ -4133,7 +3986,7 @@ menu_restore() {   # shows where the backups are kept and lets you choose one by
 
 menu_uninstall() {
     local k n items=(screen network-manager webcam timelapse shell-command shaketune spoolman acepro obico octoapp octoeverywhere fluidd moonraker klipper data system cleanup all erase freespace)
-    declare -A label=([freespace]="Free up disk space" [screen]="Touchscreen (KlipperScreen)" [network-manager]="NetworkManager (switch back to dhcpcd)" [webcam]="Webcam (crowsnest)" [timelapse]="Timelapse" [shell-command]="Klipper gcode shell command" [shaketune]="Klippain Shake&Tune" [spoolman]="Spoolman (filament spools)" [acepro]="Anycubic ACE Pro (driver, config, project)" [obico]="Obico for Klipper" [octoapp]="OctoApp" [octoeverywhere]="OctoEverywhere" [fluidd]="Fluidd web page" [moonraker]="Moonraker" [klipper]="Klipper" [data]="My printer data" [system]="System files" [cleanup]="Clean up installer files" [all]="All programs" [erase]="Erase everything")
+    declare -A label=([freespace]="Free up disk space" [screen]="ZR Tools macros" [network-manager]="NetworkManager (switch back to dhcpcd)" [webcam]="Webcam (crowsnest)" [timelapse]="Timelapse" [shell-command]="Klipper gcode shell command" [shaketune]="Klippain Shake&Tune" [spoolman]="Spoolman (filament spools)" [acepro]="Anycubic ACE Pro (driver, config, project)" [obico]="Obico for Klipper" [octoapp]="OctoApp" [octoeverywhere]="OctoEverywhere" [fluidd]="Fluidd web page" [moonraker]="Moonraker" [klipper]="Klipper" [data]="My printer data" [system]="System files" [cleanup]="Clean up installer files" [all]="All programs" [erase]="Erase everything")
     declare -A help=([freespace]="Shows what is safe to erase, with sizes and warnings; erases only what you pick" [network-manager]="Only if this installer switched you to it" [fluidd]="The page you open in the browser, with its nginx site" [moonraker]="The web API Fluidd and the add-ons use" [klipper]="The printer firmware host" [data]="printer.cfg, calibration, database, gcode files (a backup is made first)" [system]="Services, nginx files and the can0 rule the installer added" [cleanup]="Old backups, support bundles, moved-aside folders, saved copies, the installer folder" [all]="Every program above and the system files. Keeps my printer data, backups and installer files" [erase]="Programs, printer data, backups, logs and every installer file. Keeps only the installer folder")
     while true; do
         echo; echo "  Uninstall"; echo "  Choose what to remove. Each choice explains what goes and asks before it changes anything."
@@ -4366,12 +4219,8 @@ case "$MODE" in
     settz)      do_set_timezone; exit 0 ;;
     sethost)    do_set_hostname; exit 0 ;;
     uninstall)  do_uninstall; exit 0 ;;
-    screentest) do_screen_test; exit 0 ;;
-    screenlayout) do_screen_layout; exit 0 ;;
-    screenremove) do_screen_remove; exit 0 ;;
 esac
 
-if [ -n "$SCREEN_LAYOUT" ] && [ "$MODE" = install ] && [ "$WANT_SCREEN" = ask ] && [ -f "$CONF" ]; then do_screen_layout; exit 0; fi
 check_system
 preflight
 ask_model

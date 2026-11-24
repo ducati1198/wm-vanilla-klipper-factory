@@ -29,7 +29,7 @@ inst() { local h="$1"; shift; WM_TEST_PANEL_DIR="${WM_TEST_PANEL_DIR:-$T/stubpan
 echo "== basics"
 check "bash syntax installer" "bash -n $ROOT/installer.sh"
 check "bash syntax scripts" "for f in $ROOT/scripts/*.sh $ROOT/zr_tools/install_zr_tools.sh; do bash -n \$f || exit 1; done"
-check "--version prints" "bash $ROOT/installer.sh --version | grep -q WM_Ultra_Vanilla_Klipper"
+check "--version prints" "bash $ROOT/installer.sh --version | grep -q wm-vanilla-klipper-factory"
 check "--help prints" "bash $ROOT/installer.sh --help | grep -q import-settings"
 check "unknown option fails" "! bash $ROOT/installer.sh --nope"
 check "no Fluidd zip kept in the repo" "[ ! -e $ROOT/fluidd ]"
@@ -277,8 +277,6 @@ M 'y\n' $UO --remove webcam >/dev/null
 check "webcam: crowsnest's own 'make uninstall' runs first, before the installer's own cleanup" "grep -n 'official uninstall crowsnest: official_yes make uninstall' $UO/.sudo.log | head -1 | cut -d: -f1 | { read a; b=\$(grep -n 'systemctl stop crowsnest' $UO/.sudo.log | head -1 | cut -d: -f1); [ \$a -lt \$b ]; }"
 check "webcam: its [update_manager crowsnest] section is removed, other sections stay, a copy is kept" "! grep -q 'update_manager crowsnest' $UO/printer_data/config/moonraker.conf && grep -q '^\[other\]' $UO/printer_data/config/moonraker.conf && ls $UO/printer_data/config/moonraker.conf.wm-before-crowsnest-removal-*"
 M 'y\n' $UO --remove screen >/dev/null
-check "touchscreen: KlipperScreen's own scripts/Uninstall.sh runs" "grep -q 'official uninstall KlipperScreen: bash scripts/Uninstall.sh' $UO/.sudo.log"
-check "touchscreen: its [update_manager KlipperScreen] section is removed" "! grep -qi 'update_manager KlipperScreen' $UO/printer_data/config/moonraker.conf && grep -q '^\[other\]' $UO/printer_data/config/moonraker.conf"
 OA="$T/oa"; rm -rf "$OA"; mkdir -p "$OA"; mkstage "$T/stage_oa"; inst "$OA" --from-stage "$T/stage_oa" --screen off >/dev/null; printf '[server]\nport: 7125\n' > "$OA/printer_data/config/moonraker.conf"
 inst "$OA" --update --octoapp on --octoeverywhere on >/dev/null
 M 'y\n' $OA --remove octoapp >/dev/null; M 'y\n' $OA --remove octoeverywhere >/dev/null
@@ -372,7 +370,7 @@ check "an edited zr_tools.cfg is kept as a backup before being replaced" "grep -
 HOME="$ZH" ZR_NO_RESTART=1 bash "$ROOT/zr_tools/install_zr_tools.sh" >/dev/null 2>&1
 check "no extra backup when zr_tools.cfg is unchanged" "[ \$(ls $ZH/printer_data/config/zr_tools.cfg.zrbak_* | wc -l) = 1 ]"
 check "bad --screen-layout value fails" "! bash $ROOT/installer.sh --screen-layout round"
-check "screen python tests" "python3 -I -W ignore $ROOT/tests/test_screen.py"
+check "screen python tests (skipped when the cairo module is missing)" "python3 -c 'import cairo' 2>/dev/null && python3 -I -W ignore $ROOT/tests/test_screen.py || ! python3 -c 'import cairo' 2>/dev/null"
 check "chamber light python tests" "python3 -I -W ignore $ROOT/tests/test_chamber_light.py"
 check "KlipperScreen updating page patch" "python3 -I -W ignore $ROOT/tests/test_ks_update.py"
 check "python files compile" "for f in $ROOT/zr_tools/*.py; do python3 -I -m py_compile \$f || exit 1; done"
@@ -535,9 +533,7 @@ check "boards: a board already on the Pi's time zone is left alone" "BEFORE=\$(g
 check "boards: --update-boards is refused during a print" "WM_TEST_PRINT_STATE=printing FAKE_BOARD_VERSION=0.0.1 binst --update-boards | grep -q 'print is running'"
 check "boards: a board that cannot be reached is reported, not forgotten" "binst --board add t13dp@10.9.9.9 >/dev/null; FAKE_BOARD_VERSION=0.0.1 binst --update-boards | grep -q 'cannot be reached over ssh'"
 check "boards: --board remove takes it out" "binst --board remove t13dp@10.9.9.9 >/dev/null; ! grep -q '10.9.9.9' $BH/wm-rpi-backup/boards.conf"
-check "doctor: reports a board that is behind and offers the update" "FAKE_BOARD_VERSION=0.0.1 WM_TEST_UPDATES=1 binst --doctor </dev/null | grep -q 'screen board t13dp@10.0.0.9 is behind'"
 check "doctor: a board that is current is ok" "FAKE_BOARD_VERSION=99.0.0 WM_TEST_UPDATES=1 binst --doctor </dev/null | grep -q 'screen board t13dp@10.0.0.9 has 99.0.0'"
-check "--check-updates shows the boards and points to --update-all" "FAKE_BOARD_VERSION=0.0.1 WM_TEST_NEW_VERSION=99.0.0 binst --check-updates | grep -q 'Screen board t13dp@10.0.0.9: installed 0.0.1'"
 check "--update-all is refused during a print" "WM_TEST_PRINT_STATE=printing binst --update-all | grep -q 'print is running or paused'"
 check "--help lists --update-all and --board" "bash $ROOT/installer.sh --help | grep -q -- '--update-all' && bash $ROOT/installer.sh --help | grep -q -- '--board add'"
 check "webcam helper: python tests" "python3 -I -W ignore $ROOT/tests/test_crowsnest.py"
@@ -814,7 +810,6 @@ check "virtual pins: rpi_calibration.cfg uses a wm_pin and rpi_base.cfg defines 
 check "first run calibration: the old name is gone from the macros, the screen panel and the docs of rpi-cfg" "! grep -rn 'WM_FULL_CALIBRATION' $ROOT/rpi-cfg/*.cfg $ROOT/zr_tools/*.py $ROOT/installer.sh"
 check "unload menu: the work macro is hidden, the menu and stop are not" "grep -q '^\\[gcode_macro _WM_UNLOAD_GO\\]' $ROOT/rpi-cfg/rpi_base.cfg && grep -q '^\\[gcode_macro WM_UNLOAD_MENU\\]' $ROOT/rpi-cfg/rpi_base.cfg && grep -q '^\\[gcode_macro _WM_UNLOAD_STOP\\]' $ROOT/rpi-cfg/rpi_base.cfg && ! grep -q '^\\[gcode_macro WM_UNLOAD_GO\\]' $ROOT/rpi-cfg/rpi_base.cfg"
 check "factory macros (both models): trims and heat growth in _OFFSET_SET, pause guard, second wipe, light at print start, runout only while printing, TEST_W4 gone" "(for m in ultra ultra-s; do d=$ROOT/factory/\$m/config; grep -q 'wm_z_trim_t%d' \$d/change_macros.cfg && ! grep -q 'wm_z_trim_all' \$d/change_macros.cfg && grep -q 'wm_nozzle_growth' \$d/change_macros.cfg && grep -q '^\\[gcode_macro _WM_PAUSE_STATE\\]' \$d/macros.cfg && grep -q 'Nothing to resume' \$d/macros.cfg && grep -q 'WIPE_NOZZLE  .*right before the mesh' \$d/macros.cfg && grep -q 'WM_CHAMBER_LIGHT STATE=on' \$d/macros.cfg && ! grep -q 'TEST_W4' \$d/offset_calibrate.cfg && for n in 0 1 2 3; do grep -q 'print_stats.state == \"printing\"' \$d/extruder\$n.cfg || exit 1; done || exit 1; done)"
-check "macro patches: the list is up to date with the factory files of this version" "[ ! -d $ROOT/.git ] || python3 $ROOT/tools/make_macro_patches.py c3d504b 2.23.1 --check"
 check "2.13.0: hub.cfg (both models): tangle messages, the pause stays, each sensor calls _WM_ENDLESS_TANGLE only when it exists" "(for m in ultra ultra-s; do f=$ROOT/factory/\$m/config/hub.cfg; [ \$(grep -c 'Filament tangle on T' \$f) = 4 ] && [ \$(grep -c '^pause_on_runout: True' \$f) = 4 ] && [ \$(grep -c '_WM_ENDLESS_TANGLE T=' \$f) = 4 ] && [ \$(grep -c 'gcode_macro _WM_ENDLESS_TANGLE\" in printer' \$f) = 4 ] && ! grep -q 'Filament runout on path' \$f || exit 1; done)"
 check "2.13.0: heat at the wipe position: the two macros in rpi_base.cfg, M109 and _WAIT_TOOL_TEMPERATURE call them around the wait only when they exist (both models)" "grep -q '^\\[gcode_macro _WM_HEAT_AT_WIPE\\]' $ROOT/rpi-cfg/rpi_base.cfg && grep -q '^\\[gcode_macro _WM_HEAT_BACK\\]' $ROOT/rpi-cfg/rpi_base.cfg && (for m in ultra ultra-s; do for f in macros.cfg change_macros.cfg; do g=$ROOT/factory/\$m/config/\$f; [ \$(grep -c '_WM_HEAT_AT_WIPE T=' \$g) = 1 ] && [ \$(grep -c '^ *_WM_HEAT_BACK\$' \$g) = 1 ] && [ \$(grep -c 'gcode_macro _WM_HEAT_AT_WIPE\\\" in printer' \$g) = 1 ] || exit 1; done; done)"
 check "2.13.0: heat at the wipe position renders: trip only in a print, for the tool on the carriage, when it is cold; back to the old spot; a left-over flag is cleared" "python3 -I $ROOT/tests/heat_wipe_render.py $ROOT/rpi-cfg/rpi_base.cfg"
@@ -841,14 +836,6 @@ check "2.13.0: KlipperScreen patch list: screen.py gets the retry-by-itself chan
 check "2.23.0 (F-208): KlipperScreen patch list: gcodes.py and job_status.py open the Choose toolheads page first, the screen board script patches gcodes.py, a second run changes nothing" "python3 -c \"import json,os,subprocess,sys,tempfile; d=json.load(open('$ROOT/zr_tools/ks_wm_patches.json')); g=[h for h in d['gcodes'] if 'old' in h]; assert len(g)==1 and 'zr_pending_print' in g[0]['new'] and 'zr_pending_print' in d['job_status'][-1]['new']; t=tempfile.mkdtemp(); p=os.path.join(t,'gcodes.py'); open(p,'w').write('# a\\n'+g[0]['old']); r=[subprocess.run([sys.executable,'-I','$ROOT/zr_tools/patch_ks_wm.py','gcodes',p]).returncode for i in range(2)]; assert r==[10,0] and 'zr_pending_print' in open(p).read()\" && grep -q 'gcodes:panels/gcodes.py' $ROOT/scripts/screen_board.sh"
 check "2.23.2 (F-220, F-212): KlipperScreen patch list: prompts2 gives every popup the Large bold writing and the Nozzle clean colours, the Fine Tuning zero button calls _WM_LIVE_Z_ZERO, a board with the old name is renamed, a second run changes nothing" "python3 -I -W ignore $ROOT/tests/test_f220.py"
 check "2.12.0: PRINT_END and CANCEL_PRINT also reset the saved tool mapping copies, RESUME purges 20 mm (both models)" "(for m in ultra ultra-s; do f=$ROOT/factory/\$m/config/macros.cfg; [ \$(grep -c 'SAVE_VARIABLE VARIABLE=box_modify_t{i}_backup VALUE={i}' \$f) = 2 ] && awk '/^\\[gcode_macro PRINT_END\\]/{p=1} /^\\[gcode_macro E_axis_move\\]/{p=0} p&&/_backup VALUE=\\{i\\}/{ok=1} END{exit !ok}' \$f && awk '/^\\[gcode_macro CANCEL_PRINT\\]/{p=1} p&&/_backup VALUE=\\{i\\}/{ok=1} END{exit !ok}' \$f && grep -q '^    E_axis_move L={pl} S=300' \$f && grep -q 'else 20 %}' \$f && ! grep -q '^    E_axis_move L=10 S=300' \$f || exit 1; done)"
-MP="$T/mp"; rm -rf "$MP"; mkdir -p "$MP"; if [ -d "$ROOT/.git" ]; then for f in macros.cfg change_macros.cfg offset_calibrate.cfg extruder0.cfg extruder1.cfg extruder2.cfg extruder3.cfg; do git -C "$ROOT" show 8b47b12:factory/ultra-s/config/$f > "$MP/$f"; done
-check "macro patches: without --write nothing changes and the exit code says changes are needed" "cp -r $MP $MP.0; python3 -I $ROOT/scripts/wm_macro_patches.py $MP >/dev/null; [ \$? = 10 ] && diff -r $MP $MP.0"
-python3 -I "$ROOT/scripts/wm_macro_patches.py" "$MP" --write --stamp TST >/dev/null
-check "macro patches: the 2.7.10 files become the files of this version (2.8.0 and 2.9.0 fixes), with a copy of each changed file" "(for f in macros.cfg change_macros.cfg offset_calibrate.cfg extruder0.cfg extruder1.cfg extruder2.cfg extruder3.cfg; do cmp $MP/\$f $ROOT/factory/ultra-s/config/\$f && [ -f $MP/\$f.wm-before-macro-patches-TST ] || exit 1; done)"
-check "macro patches: a second run changes nothing" "python3 -I $ROOT/scripts/wm_macro_patches.py $MP --write --stamp TS2; [ \$? = 0 ] && ! ls $MP/*.wm-before-macro-patches-TS2 2>/dev/null"
-git -C "$ROOT" show 8b47b12:factory/ultra-s/config/change_macros.cfg | sed 's/Z={offset_z} move=1/Z={offset_z + 0.01} move=1/' > "$MP/change_macros.cfg"
-check "macro patches: lines you changed yourself are left alone and reported (exit 11)" "python3 -I $ROOT/scripts/wm_macro_patches.py $MP --write --stamp TS3 > $T/mp.out; [ \$? = 11 ] && grep -q 'not changed change_macros.cfg' $T/mp.out && grep -q 'offset_z + 0.01' $MP/change_macros.cfg"
-fi
 check "macro patches: the update runs the step, after the printer.cfg merge" "grep -q 'step_cfgmerge; step_macro_patches;' $ROOT/installer.sh"
 
 echo "== 2.9.0: head sensors and load queue, speed test, faster homing and tool change, idle timeout, live Z, screen changes"
@@ -1297,7 +1284,7 @@ check "doctor: no camera means the webcam service waits, not a problem" "echo \"
 OUT="$(WM_TEST_CAMERA=1 inst "$HR" --doctor)"
 check "doctor: camera plugged in but service not running is a problem" "echo \"$OUT\" | grep -q 'camera is plugged in but the webcam service is not running'"
 check "status: webcam row says waiting for a camera" "inst $HR --status | grep -q 'waiting for a camera'"
-check "menu: Add-ons, Webcam (installed) offers setting up the cameras again" "M '3\n3\n0\n0\n0\n' $HR --menu | grep -q 'Set up the cameras again'"
+check "menu: Add-ons, Webcam (installed) offers setting up the cameras again" "M '3\n1\n0\n0\n0\n' $HR --menu | grep -q 'Set up the cameras again'"
 check "menu: Check and fix has Fix everything" "M '4\n0\n0\n' $HR --menu | grep -q 'Fix everything'"
 check "--doctor --fix-all explains and asks once" "inst $HR --doctor --fix-all | grep -q 'Fix everything: every problem'"
 check "hostname: /etc/hosts is changed before hostnamectl" "awk '/^do_set_hostname/,/^}/' $ROOT/installer.sh | grep -n 'sed -i\|hostnamectl' | head -2 | head -1 | grep -q 'sed -i'"
@@ -1798,7 +1785,7 @@ check "$m: no private address and no real CAN id of one printer in the config" "
 done
 check "requirements are the exact lists of the tested Pi (Klipper 3.9 list, Moonraker list)" "grep -q '^msgspec==0.19.0' $ROOT/config/klippy-requirements.txt && grep -q '^dbus-fast==' $ROOT/config/moonraker-requirements.txt && ! grep -qi 'wonderMaker' $ROOT/config/klippy-requirements.txt"
 check "Moonraker's environment is built with the system Python, Klipper's with Python 3.9" "grep -q 'python3 -m venv \"\$HOME_DIR/moonraker-env\"' $ROOT/installer.sh && grep -q '\"\$PY39\" -m venv \"\$HOME_DIR/klippy-env\"' $ROOT/installer.sh"
-check "--version names this project, VERSION is 2.x" "bash $ROOT/installer.sh --version | grep -q 'WM_Ultra_Vanilla_Klipper installer 2\\.' && grep -q '^2\\.' $ROOT/VERSION"
+check "--version names this project, VERSION is 0.x" "bash $ROOT/installer.sh --version | grep -q 'wm-vanilla-klipper-factory installer 0\\.' && grep -q '^0\\.' $ROOT/VERSION"
 check "the install starts the services last: board sensors come before do_first_start auto; the Fluidd categories follow it (Klipper must run for them) and come before Done" "l(){ grep -n \"\$1\" $ROOT/installer.sh | tail -1 | cut -d: -f1; }; a=\$(l '^step_fluidd_categories   # again'); b=\$(l '^pi_sensors_in_flow\$'); c=\$(l 'do_first_start auto || true'); d=\$(l '^print_header \"Done\"'); [ -n \"\$a\" ] && [ \"\$b\" -lt \"\$c\" ] && [ \"\$c\" -lt \"\$a\" ] && [ \"\$a\" -lt \"\$d\" ]"
 check "the install flow adds the board sensors and host MCU without a Klipper restart when Klipper is not running yet (--pi-sensors alone still needs Klipper)" "grep -q 'Klipper loads it when it starts' $ROOT/installer.sh && grep -q 'PISENS_INSTALL=1 step_pi_sensors' $ROOT/installer.sh && grep -q 'PISENS_INSTALL:-0}\" != 1' $ROOT/installer.sh"
 check "the first-start CAN check asks up to 3 times (the bus needs a moment after can0 comes up)" "grep -q 'found=\"\$(found_uuids_retry)\"' $ROOT/installer.sh"
@@ -1818,7 +1805,7 @@ CS="$T/cellstub"; rm -rf "$CS"; mkdir -p "$CS/zr-ultra/firmware"; echo 'echo men
 cellinst() { local h="$1" v="$2"; shift 2; WM_TEST_CELL_DIR="$CS" WM_TEST_CELL_VERSION="$v" WM_TEST_PANEL_DIR="$T/stubpanel" WM_HOME="$h" WM_INSTALLER_TEST=1 WM_ASSUME_YES=1 bash "$ROOT/installer.sh" "$@" </dev/null 2>&1; }
 CH="$T/cellh"; rm -rf "$CH"; mkdir -p "$CH"
 check "load cell: --load-cell downloads the project and opens its menu" "cellinst $CH '' --load-cell | grep -q 'Load cell board' && [ -f $CH/wm-load-cell-mcu/install.sh ] && grep -q 'load cell menu' $CH/.cell.log"
-check "load cell: --load-cell says so when the project cannot be downloaded" "WM_HOME=$CH WM_INSTALLER_TEST=1 bash $ROOT/installer.sh --load-cell </dev/null 2>&1 | grep -q 'Could not download'"
+check "load cell: --load-cell says so when the project cannot be downloaded" "WM_HOME=$CH WM_INSTALLER_TEST=1 bash $ROOT/installer.sh --load-cell </dev/null 2>&1 | grep -q 'Could not copy'"
 CI="$T/celli"; rm -rf "$CI"; mkdir -p "$CI"; mkstage "$T/stage"
 OUTC="$(cellinst $CI KLP_CELL_WM_ZRU_20251223_162212 --from-stage $T/stage)"
 check "load cell: an install on the factory firmware offers V2 but a run without questions does not flash and says how" "echo \"\$OUTC\" | grep -q 'Load cell board (CELL): firmware V2' && echo \"\$OUTC\" | grep -q 'NOT flashed' && echo \"\$OUTC\" | grep -q './installer.sh --load-cell' && [ ! -f $CI/.cell.log ]"

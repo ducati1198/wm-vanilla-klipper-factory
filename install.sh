@@ -11,7 +11,6 @@
 #   ./install.sh --yes                install without the question
 #   ./install.sh --webcam on|off      crowsnest webcam (default off: ~50 MB)
 #   ./install.sh --model ultra|ultra-s  printer model (default ultra-s)
-#   ./install.sh --ref TAG            version of WM_Ultra_Vanilla_Klipper (default $DEFAULT_REF)
 #   ./install.sh --swap auto|zram|off  compressed swap (default auto: only if the kernel has zram)
 #   ./install.sh -- ARGS              extra arguments for the vanilla installer
 # NOT TESTED ON THE PRINTER YET (branch: testing).
@@ -19,16 +18,13 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"; . "$HERE/lib/snapshot.sh"
 
-DEFAULT_REF="v2.25.2"
-SRC_URL="${WM_SRC_URL:-https://github.com/ducati1198/WM_Ultra_Vanilla_Klipper}"
-SRC_DIR="${WM_SRC_DIR:-$HOME_DIR/wm-vanilla-src}"
 MIN_RAM_MB=400; MIN_DISK_MB=1500
 
-MODE=install; YES=0; WEBCAM=off; MODEL=ultra-s; REF="$DEFAULT_REF"; SWAP=auto; EXTRA=()
+MODE=install; YES=0; WEBCAM=off; MODEL=ultra-s; SWAP=auto; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
     --check) MODE=check ;;  --dry-run) MODE=dry ;;  --yes) YES=1 ;;
     --webcam) WEBCAM="${2:-}"; shift ;;  --model) MODEL="${2:-}"; shift ;;
-    --ref) REF="${2:-}"; shift ;;        --swap) SWAP="${2:-}"; shift ;;
+    --swap) SWAP="${2:-}"; shift ;;
     -h|--help) sed -n 2,19p "$0"; exit 0 ;;
     --) shift; EXTRA=("$@"); break ;;
     *) fail "unknown option: $1 (try --help)" ;;
@@ -71,12 +67,12 @@ fi
 say "      swap: $SP$([ "$SP" = off ] && echo ' (this kernel has no zram: no swap is added)')"
 
 # ---- 4. the command that will run --------------------------------------------
-CMD=(./installer.sh --model "$MODEL" --screen off --network-manager off --obico off --octoapp off
+CMD=("$HERE/installer.sh" --model "$MODEL" --screen off --network-manager off --obico off --octoapp off
      --octoeverywhere off --webcam "$WEBCAM" --timelapse off)
 [ "$YES" = 1 ] && CMD+=(--yes)
 [ "$MODE" = dry ] && CMD+=(--dry-run)
 CMD+=("${EXTRA[@]}")
-say "      source: $SRC_URL @ $REF -> $SRC_DIR"
+say "      installer: $HERE/installer.sh (this repository)"
 say "      command: ${CMD[*]}"
 
 # ---- 5. snapshot of the factory stack (once, never overwritten) -----------------------
@@ -90,19 +86,12 @@ else
     snapshot_create
     snapshot_verify || fail "the snapshot does not pass its checksum. Not installing."
     say "      tip: copy it to a USB stick now with ./snapshot.sh usb"
+    bash "$HERE/usb_rescue/install.sh" && ok "USB flag WM-FACTORY armed" || warn "the USB boot check could not be installed"
 fi
 
-# ---- 6. get the installer and run it --------------------------------------------
-if [ "$MODE" = dry ] && [ ! -d "$SRC_DIR/.git" ] && [ -z "${WM_FORCE_FETCH:-}" ]; then
-    say "      would clone $SRC_URL at $REF into $SRC_DIR, then run the command above with --dry-run"
-else
-    if [ ! -d "$SRC_DIR/.git" ]; then
-        $GIT clone --depth 1 --branch "$REF" "$SRC_URL" "$SRC_DIR" || fail "could not download the installer ($SRC_URL @ $REF)."
-    else
-        ( cd "$SRC_DIR" && $GIT fetch -q --depth 1 origin tag "$REF" && $GIT checkout -q "$REF" ) || fail "could not switch $SRC_DIR to $REF."
-    fi
-    ( cd "$SRC_DIR" && "${CMD[@]}" ) || fail "the vanilla installer stopped with an error (see above). Back to factory: ./restore.sh --factory"
-fi
+# ---- 6. run the installer of this repository ---------------------------------------
+[ -d "$HERE/factory" ] || fail "the factory/ folder is missing in $HERE (it is not part of the git repository). Copy it from WM_Ultra_Vanilla_Klipper next to installer.sh."
+( cd "$HERE" && "${CMD[@]}" ) || fail "the installer stopped with an error (see above). Back to factory: ./restore.sh --factory"
 
 # ---- 7. report -----------------------------------------------------------------
 say "      memory now: $(avail_mb) MB available of $(ram_mb) MB"

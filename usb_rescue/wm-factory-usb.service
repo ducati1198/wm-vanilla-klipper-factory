@@ -1,0 +1,12 @@
+[Unit]
+Description=WonderMaker: look for a WM-FACTORY / WM-RESCUE flag on a USB stick at boot
+After=local-fs.target
+Before=klipper.service moonraker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wm-factory-rescue/wm-usb-check
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
